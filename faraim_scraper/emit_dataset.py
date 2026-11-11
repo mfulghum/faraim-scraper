@@ -244,7 +244,9 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Emit the HF dataset package.")
     p.add_argument("--data", type=Path, default=Path("data"))
     p.add_argument("--qa", type=Path, default=Path("work/qa_clean.jsonl"))
-    p.add_argument("--out", type=Path, default=Path("dataset"))
+    from .config import default_dataset_dir
+    p.add_argument("--out", type=Path, default=default_dataset_dir(),
+                   help="output dir (default: ~/huggingface/far-aim when cloned)")
     args = p.parse_args(argv)
     summary = emit(args.data, args.qa, args.out)
     print(json.dumps(summary, indent=2))

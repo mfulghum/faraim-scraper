@@ -210,7 +210,9 @@ def main(argv=None) -> int:
     import argparse
     p = argparse.ArgumentParser(description="Build the corpus config from a scrape.")
     p.add_argument("--data", type=Path, default=Path("data"))
-    p.add_argument("--out", type=Path, default=Path("dataset"))
+    from .config import default_dataset_dir
+    p.add_argument("--out", type=Path, default=default_dataset_dir(),
+                   help="output dir (default: ~/huggingface/far-aim when cloned)")
     p.add_argument("--max-tokens", type=int, default=MAX_CHUNK_TOKENS)
     args = p.parse_args(argv)
     chunks = build_chunks(args.data, max_tokens=args.max_tokens)

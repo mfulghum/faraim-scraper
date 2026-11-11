@@ -84,12 +84,26 @@ def write_card(out_dir: Path, summary: dict, filter_stats: dict, data_dir: Path)
     (out_dir / "README.md").write_text(card, encoding="utf-8")
 
 
+def write_gitattributes(out_dir: Path) -> None:
+    """Standard HF LFS tracking rules (idempotent)."""
+    path = out_dir / ".gitattributes"
+    if path.is_file():
+        return
+    path.write_text(
+        "*.parquet filter=lfs diff=lfs merge=lfs -text\n"
+        "*.jsonl filter=lfs diff=lfs merge=lfs -text\n"
+        "*.json filter=lfs diff=lfs merge=lfs -text\n",
+        encoding="utf-8")
+
+
 def main(argv=None) -> int:
     import argparse
+    from .config import default_dataset_dir
     p = argparse.ArgumentParser(description="Build the full HF dataset package.")
     p.add_argument("--data", type=Path, default=Path("data"))
     p.add_argument("--work", type=Path, default=Path("work"))
-    p.add_argument("--out", type=Path, default=Path("dataset"))
+    p.add_argument("--out", type=Path, default=default_dataset_dir(),
+                   help="output dir (default: ~/huggingface/far-aim when cloned)")
     p.add_argument("--skip-filter", action="store_true",
                    help="reuse existing work/qa_clean.jsonl")
     args = p.parse_args(argv)
@@ -105,8 +119,11 @@ def main(argv=None) -> int:
                                            if k != "reject_reasons"}))
     summary = emit(args.data, clean, args.out)
     write_card(args.out, summary, {}, args.data)
+    write_gitattributes(args.out)
     print("dataset summary:", json.dumps(summary, indent=2))
     print(f"dataset written to {args.out}")
+    print("review locally, then publish (requires write token): git -C",
+          args.out, "add -A && git commit && git push origin main")
     return 0
 
 

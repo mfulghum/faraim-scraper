@@ -18,6 +18,16 @@ USER_AGENT = (
     "based on requests"
 )
 
+from pathlib import Path
+
+# The packaged dataset ships in its own Hugging Face dataset repo
+# (https://huggingface.co/datasets/mfulghum/far-aim), cloned here.
+HF_DATASET_DIR = Path.home() / "huggingface" / "far-aim"
+
+
+def default_dataset_dir() -> Path:
+    return HF_DATASET_DIR if HF_DATASET_DIR.is_dir() else Path("dataset")
+
 # Patterns of section hrefs on the site
 import re
 

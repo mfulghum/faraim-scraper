@@ -40,7 +40,8 @@ def main(argv=None) -> int:
 
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--data", type=Path, default=Path("data"))
-    p.add_argument("--gold", type=Path, default=Path("dataset/eval/gold.jsonl"))
+    from .config import HF_DATASET_DIR
+    p.add_argument("--gold", type=Path, default=HF_DATASET_DIR / "eval" / "gold.jsonl")
     p.add_argument("--mode", choices=("closed", "oracle"), default="closed")
     p.add_argument("--url", default="http://steakbox.local:8888/v1")
     p.add_argument("--model", default="Qwen3.8-Flash-Next")
