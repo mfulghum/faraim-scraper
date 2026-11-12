@@ -316,6 +316,49 @@ def write_parquet_split(rows: List[dict], out_dir: Path, name: str) -> Dict[str,
     return counts
 
 
+def build_acs_gold(llm_path: Path, acs_dir: Path) -> List[dict]:
+    """Gold eval rows from teacher-verified ACS links: given an ACS code,
+    which sections must a good answer cite (with the verified quote)."""
+    llm_path, acs_dir = Path(llm_path), Path(acs_dir)
+    if not llm_path.is_file():
+        return []
+    texts: Dict[str, str] = {}
+    pdfs: Dict[str, str] = {}
+    for l in (acs_dir / "acs_elements.jsonl").read_text(
+            encoding="utf-8").splitlines():
+        e = json.loads(l)
+        texts[e["code"]] = e["text"]
+        pdfs[e["code"]] = e.get("pdf") or ""
+    for l in (acs_dir / "acs_tasks.jsonl").read_text(
+            encoding="utf-8").splitlines():
+        t = json.loads(l)
+        code = t["code"] + " (task)"
+        texts[code] = t.get("objective", "")
+        pdfs[code] = t.get("pdf") or ""
+
+    gold: Dict[str, dict] = {}
+    for l in llm_path.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(l)
+        for link in rec.get("links", []):
+            code = link["code"]
+            if code not in texts:
+                continue
+            row = gold.setdefault(code, {
+                "id": code, "code": code, "acs_text": texts[code],
+                "split": ("test" if pdfs.get(code) in ACS_TEST_PDFS else
+                          "val" if pdfs.get(code) in ACS_VAL_PDFS else "train"),
+                "gold_sections": [], "_seen": set()})
+            if link["html_path"] in row["_seen"]:
+                continue
+            row["_seen"].add(link["html_path"])
+            row["gold_sections"].append({
+                "section_id": link["section_id"], "type": link["type"],
+                "quote": link["quote"], "evidence": link["evidence"]})
+    for row in gold.values():
+        row.pop("_seen", None)
+    return [r for r in gold.values() if r["gold_sections"]]
+
+
 def emit(data_dir: Path, qa_path: Path, out_dir: Path,
          work_dir: Optional[Path] = None) -> dict:
     index = SectionIndex(data_dir)
@@ -364,6 +407,13 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path,
     gold = build_gold_eval(recs, chunk_by_id)
     write_jsonl(out_dir / "eval" / "gold.jsonl", gold)
     summary["gold_eval"] = len(gold)
+
+    if work_dir is not None:
+        acs_gold = build_acs_gold(Path(work_dir) / "acs_links_llm.jsonl",
+                                  Path(data_dir) / "acs")
+        if acs_gold:
+            write_jsonl(out_dir / "eval" / "acs_gold.jsonl", acs_gold)
+            summary["acs_gold"] = len(acs_gold)
 
     scrape_info = {}
     info_path = Path(data_dir) / "scrape_info.json"

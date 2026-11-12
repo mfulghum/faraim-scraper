@@ -37,7 +37,7 @@ cited sections must exist, quotes must match the source text verbatim
 | `handbooks` | parquet | see handbooks/ | FAA-H-8083-x handbook chunks (PHAK, AFH, HFH, AMT, weather…) with chapter/page provenance |
 | `summaries` | parquet | see summaries/ | hierarchical summary tree (part/chapter → section → subsection) for semantic navigation |
 | `retrieval` | jsonl (queries/corpus/qrels) | {retrieval} | bi-encoder fine-tuning (BEIR-style, BM25 hard negatives) |
-| `eval` | jsonl | {gold} | gold eval set (human-reviewable, citation-scored) |
+| `eval` | jsonl | {gold} | gold eval set (human-reviewable, citation-scored) + `acs_gold.jsonl` (ACS code → must-cite sections, teacher-verified) |
 
 FAR/AIM `corpus` and `sft` rows carry an `acs_keys` field: ACS test codes
 linked to the governing sections via citations and TF-IDF semantic matching
