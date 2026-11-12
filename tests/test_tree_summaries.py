@@ -55,6 +55,24 @@ def test_build_plan_hierarchy(tmp_path):
     assert {c["id"] for c in by_id["sum:far:91"]["children"]} == {"sum:far:91:91.205"}
 
 
+def test_build_plan_includes_handbooks(tmp_path):
+    data = make_data(tmp_path)
+    hb = data / "handbooks"
+    hb.mkdir()
+    (hb / "handbook_chunks.jsonl").write_text("\n".join(json.dumps({
+        "id": f"hbk:amtg_handbook:ch3#{i}", "handbook": "amtg_handbook",
+        "handbook_title": "Technician Handbook—General", "chapter": 3,
+        "chapter_title": "DC Circuits", "pages": "3-1-3-40",
+        "text": "Voltage is the force that pushes current. " * 20,
+        "n_tokens": 120}) for i in (1, 2)), encoding="utf-8")
+    plan = build_plan(data)
+    sec = next(n for n in plan if n["id"] == "sum:hbk:amtg_handbook:ch3#1")
+    assert sec["level"] == "section" and sec["doc"] == "handbook"
+    assert sec["parent_id"] == "sum:hbk:amtg_handbook:ch3"
+    ch = next(n for n in plan if n["id"] == "sum:hbk:amtg_handbook:ch3")
+    assert ch["level"] == "part" and len(ch["children"]) == 2
+
+
 def test_prompts_and_resume(tmp_path):
     node = {"title": "§ 91.205", "text": "night equipment list here"}
     lp = leaf_prompt(node, "far part 91")

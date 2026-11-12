@@ -131,6 +131,33 @@ def build_plan(data_dir: Path) -> List[dict]:
                      "doc": "aim", "chapter": ch, "section_id": None,
                      "title": f"AIM {ch.replace('chapter-', 'Chapter ')}",
                      "children": secs})
+
+    # handbooks: chunk = leaf 'section' node, chapter = 'part' node
+    hb_path = data_dir / "handbooks" / "handbook_chunks.jsonl"
+    if hb_path.is_file():
+        hb_chapters: Dict[tuple, List[dict]] = {}
+        for line in hb_path.read_text(encoding="utf-8").splitlines():
+            c = json.loads(line)
+            ch_id = f"sum:hbk:{c['handbook']}:ch{c['chapter']}"
+            sec = {"id": f"sum:{c['id']}", "level": "section",
+                   "parent_id": ch_id, "doc": "handbook",
+                   "part": c["handbook"], "chapter": str(c["chapter"]),
+                   "section_id": c["id"],
+                   "title": f"{c['handbook']} ch{c['chapter']} "
+                            f"{c.get('chapter_title') or ''}".strip(),
+                   "text": c["text"]}
+            plan.append(sec)
+            hb_chapters.setdefault((c["handbook"], c["chapter"],
+                                    c["handbook_title"],
+                                    c.get("chapter_title")), []).append(sec)
+        for (hbk, chnum, htitle, chtitle), secs in sorted(hb_chapters.items()):
+            plan.append({
+                "id": f"sum:hbk:{hbk}:ch{chnum}", "level": "part",
+                "parent_id": f"hbk:{hbk}", "doc": "handbook", "part": hbk,
+                "chapter": str(chnum), "section_id": None,
+                "title": f"{htitle}: Chapter {chnum}"
+                         + (f" — {chtitle}" if chtitle else ""),
+                "children": secs})
     return plan
 
 
