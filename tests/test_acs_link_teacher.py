@@ -121,6 +121,55 @@ def test_requirement_sections_named_by_answer_key():
         "91.205", "91.209", "61.57"}
 
 
+def test_merge_folds_teacher_links(tmp_path):
+    import json as _json
+    from faraim_scraper.acs_link_teacher import merge
+    acs_dir = tmp_path / "acs"
+    acs_dir.mkdir()
+    def w(path, recs):
+        (acs_dir / path).write_text(
+            "\n".join(_json.dumps(r) for r in recs), encoding="utf-8")
+    w("acs_links.jsonl", [
+        {"code": "IH.I.A.K1", "pdf": "x.pdf", "kind": "element",
+         "links": [
+             {"type": "far", "section_id": "61.57", "title": "t",
+              "html_path": "far/61.57.html", "url": "u",
+              "evidence": "semantic (cosine=0.2)", "strength": 2},
+             {"type": "far", "section_id": "61.3", "title": "t",
+              "html_path": "far/61.3.html", "url": "u",
+              "evidence": "§ 61.3", "strength": 3},
+             {"type": "handbook", "section_id": "FAA-H-8083-25", "title": None,
+              "html_path": "handbooks/FAA-H-8083-25", "url": "",
+              "evidence": "references FAA-H-8083-25", "strength": 3}]},
+        {"code": "ZZ.Z.Z.K1", "pdf": "y.pdf", "kind": "element",
+         "links": [{"type": "far", "section_id": "91.1", "title": "t",
+                    "html_path": "far/91.1.html", "url": "u",
+                    "evidence": "semantic (cosine=0.2)", "strength": 2}]},
+    ])
+    llm = tmp_path / "llm.jsonl"
+    llm.write_text(_json.dumps({"group": "x|IH.I.A", "links": [
+        {"code": "IH.I.A.K1", "type": "far", "section_id": "61.57",
+         "title": "Recent flight experience", "html_path": "far/61.57.html",
+         "url": "u", "quote": "six instrument approaches",
+         "evidence": "llm gap-fill (auto-quote)", "strength": 3}]}) + "\n",
+        encoding="utf-8")
+    stats = merge(acs_dir, llm)
+    assert stats["teacher_merged_records"] == 1
+    forward = [_json.loads(l) for l in
+               (acs_dir / "acs_links.jsonl").read_text().splitlines()]
+    k1 = next(r for r in forward if r["code"] == "IH.I.A.K1")
+    ids = {l["section_id"] for l in k1["links"]}
+    assert ids == {"61.3", "FAA-H-8083-25", "61.57"}   # cosine dropped, explicit kept
+    assert next(l for l in k1["links"] if l["section_id"] == "61.57")["evidence"] \
+        == "llm gap-fill (auto-quote)"
+    zz = next(r for r in forward if r["code"] == "ZZ.Z.Z.K1")
+    assert zz["links"][0]["strength"] == 2             # untouched, no teacher links
+    reverse = [_json.loads(l) for l in
+               (acs_dir / "acs_keys_by_section.jsonl").read_text().splitlines()]
+    entry = next(r for r in reverse if r["html_path"] == "far/61.57.html")
+    assert "IH.I.A.K1" in entry["acs_keys"]
+
+
 def test_build_groups(tmp_path):
     acs = tmp_path / "acs"
     acs.mkdir()

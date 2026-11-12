@@ -120,6 +120,36 @@ Handbook chunks also feed QA synthesis: `python -m faraim_scraper.synthesize
 --handbooks --only hbk: --out work/qa_handbooks.jsonl` generates the same four
 validated pair types for every handbook (pilot and mechanic volumes alike).
 
+## ACS -> governing-text links (teacher-in-the-loop)
+
+```bash
+python -m faraim_scraper.acs_link_teacher            # plan/link/verify per task group
+python -m faraim_scraper.acs_link_teacher --merge    # fold into data/acs/acs_links.jsonl
+```
+
+No cosine ranking for scoped records: for every ACS task group the reader
+model (1) writes the expected **answer key** from the table of contents of the
+documents named in the task's References line, (2) loads those passages in
+full and emits per-code links with **verbatim-quoted** evidence, (3) an
+inspector pass marks every (code, requirement) covered/uncovered, and (4)
+requirements that NAME a section (e.g. `14 CFR 91.205(c)`) are enforced
+mechanically — the quote is demanded from that exact section, falling back to
+the named paragraph's own text (`llm gap-fill (auto-quote)`). Checkpointed in
+`work/acs_links_llm.jsonl`, resumable. TF-IDF remains only as the fallback
+for records whose References name nothing we scraped.
+
+## Summary tree (semantic navigation)
+
+```bash
+python -m faraim_scraper.tree_summaries   # -> work/summaries.jsonl
+```
+
+Hierarchical catalog: part/chapter -> section -> subsection for FAR, AIM and
+every handbook, summarized bottom-up by the teacher (parents condense their
+children's summaries). The linker's TOC prompts show these catalog blurbs, so
+search descends general -> specific before loading full text. Ships as the
+`summaries` dataset config.
+
 ## Tests
 
 ```bash
