@@ -54,8 +54,21 @@ SUMMARY_FORMAT = {
 }
 
 
+def _block_title(body: str) -> str:
+    """'(b) Orange panels. Display of...' -> '(b) Orange panels.'; fall back
+    to the first clause, cut at a word boundary -- never mid-word."""
+    line = " ".join(body.splitlines()).strip()
+    m = re.match(r"^\(\w{1,2}\)\s+(.{2,80}?\.)\s", line)
+    if m:
+        return line[:m.end()].strip()
+    m = re.match(r"^\(\w{1,2}\)\s+(.+)", line)
+    head = m.group(1) if m else line
+    if len(head) > 100:
+        head = head[:100].rsplit(" ", 1)[0] + "…"
+    return head.strip()
+
+
 def subsection_blocks(text: str) -> List[dict]:
-    """Split CFR section text on top-level (a)/(b)/... markers."""
     marks = list(TOP_BLOCK_RE.finditer(text))
     if len(marks) < 3:
         return []
@@ -65,9 +78,8 @@ def subsection_blocks(text: str) -> List[dict]:
         body = text[m.start():end].strip()
         if count_tokens(body) < 40:
             continue
-        first_line = body.splitlines()[0][:100]
-        blocks.append({"marker": f"({m.group(1)})", "title": first_line,
-                       "text": body})
+        blocks.append({"marker": f"({m.group(1)})",
+                       "title": _block_title(body), "text": body})
     return blocks
 
 

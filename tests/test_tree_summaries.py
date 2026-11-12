@@ -17,9 +17,22 @@ CFR_TEXT = """
 def test_subsection_blocks():
     blocks = subsection_blocks(CFR_TEXT)
     assert [b["marker"] for b in blocks] == ["(a)", "(b)", "(c)", "(d)"]
-    assert blocks[0]["title"].startswith("(a) Except as provided")
+    t = blocks[0]["title"]
+    assert t.startswith("(a) Except as provided")
+    assert not t.endswith("wi")          # never a mid-word chop
+    assert t.endswith("…") or t.endswith(".")
     # too few top-level markers -> no split
     assert subsection_blocks("just one (a) paragraph here") == []
+
+
+def test_block_title_prefers_heading_sentence():
+    from faraim_scraper.tree_summaries import _block_title
+    body = ("(b) Orange panels. Display of an identification number on an "
+            "orange panel shall be in conformance with the specifications.")
+    assert _block_title(body) == "(b) Orange panels."
+    long_body = "(c) " + "filler words here " * 20
+    t = _block_title(long_body)
+    assert t.endswith("…") and not t[-2:-1] == " "
 
 
 def make_data(tmp_path):
