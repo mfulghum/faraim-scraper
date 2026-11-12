@@ -1,14 +1,18 @@
-"""Link ACS elements/tasks to the scraped FAR/AIM sections.
+"""Link ACS elements/tasks to the scraped FAR/AIM/handbook sections.
 
 Matching evidence, strongest first:
   1. explicit citations in ACS text: 14 CFR § 91.103 / AIM ¶ 5-1-4 / "AIM 4-3-3"
-  2. task References: 14 CFR part 91  -> that part's sections (part-level, weak)
-  3. bare AIM mentions                -> chapter-level context only (skipped)
+  2. reference-scoped semantic hits: the task's References line
+     ("14 CFR part 61; FAA-H-8083-25...") CONSTRAINS the candidate pool to the
+     sections of those CFR parts and the chunks of those handbooks; elements
+     inherit their parent task's References
+  3. book-level links for every handbook cited in References
+  4. global semantic fallback for records whose References name no scraped doc
 
 Outputs (in the ACS output dir):
-  acs_links.jsonl        one line per ACS code: links to far/aim sections + evidence
+  acs_links.jsonl        one line per ACS code: links + evidence
   acs_keys_by_section.jsonl
-                         one line per FAR/AIM section: relevant ACS codes (reverse index)
+                         one line per section/handbook chunk: relevant ACS codes
 """
 
 import json
@@ -21,6 +25,52 @@ FAR_SECTION_REF_RE = re.compile(r"§\s*(\d+\.\d+)")
 AIM_PARA_REF_RE = re.compile(r"\b(\d+-\d{1,2}-\d{1,3})\b")
 FAR_PART_REF_RE = re.compile(r"14 CFR parts?\s+([\d,\sand]+)")
 FAR_PART_WORD_RE = re.compile(r"\b[Pp]art\s+(\d{1,4})\b")
+
+# ACS References cite handbook codes that don't match our file-derived ids.
+HB_CODE_ALIASES = {
+    "FAA-H-8083-30": ["amtg_handbook"],                      # AMT General
+    "FAA-H-8083-31": ["amt_powerplant_handbook",             # AMT Powerplant...
+                      "FAA-H-8083-31B"],                      # ...and Airframe
+    "FAA-H-8083-24": ["FAA-H-8083-9B"],                       # Aviation Instructor
+}
+
+
+def _hb_key(code: str):
+    """Canonical join key for a handbook code: ('8083','25') or lowercase stem."""
+    m = re.match(r"FAA-H-(\d+)-(\d+)", code.upper())
+    return (m.group(1), m.group(2)) if m else code.lower()
+
+
+_TOKEN_RE = re.compile(r"[a-z0-9§¶\-]+")
+# ACS prose and regulation prose use different words for the same concept.
+_SYNONYMS = {
+    "recency": "recent", "currency": "current", "logbook": "record",
+    "rating": "certificate", "proficiency": "competency",
+}
+
+
+def _stem(token: str) -> str:
+    """Light suffix stripping so 'experiences'~'experience', 'certifying'~'certify'."""
+    if len(token) > 5 and token.endswith("ies"):
+        return token[:-3] + "y"
+    if len(token) > 5 and token.endswith("ing"):
+        return token[:-3]
+    if len(token) > 4 and token.endswith("ed"):
+        return token[:-2]
+    if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+        return token[:-1]
+    return token
+
+
+def _tokenize_stem(text: str) -> List[str]:
+    return [_stem(t) for t in _TOKEN_RE.findall(text.lower())]
+
+
+def _expand(query: str) -> str:
+    """Append regulation-side vocabulary for ACS-side terms (post-stem match)."""
+    toks = {_stem(t) for t in _TOKEN_RE.findall(query.lower())}
+    extra = [v for k, v in _SYNONYMS.items() if _stem(k) in toks]
+    return query + " " + " ".join(extra) if extra else query
 
 
 def parse_refs(text: str) -> Dict[str, List[str]]:
