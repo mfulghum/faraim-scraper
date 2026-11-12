@@ -135,7 +135,12 @@ def build_plan(data_dir: Path) -> List[dict]:
 
 
 def parent_prompt(node: dict, child_lines: List[str], parent_ctx: str) -> str:
-    lines = [f"CONTEXT: {parent_ctx}",
+    lines = ["You are writing a catalog entry for an index of FAA regulatory "
+             "and handbook material. Describe the item objectively in the "
+             "third person ('This section prescribes...', 'Chapter 4 "
+             "explains...'). Never mention the user, the prompt, or that text "
+             "was 'provided' or 'shared'. Summarize substance only.", "",
+             f"CONTEXT: {parent_ctx}",
              f"ITEM: {node['title']}", "",
              "SUMMARIES OF THE PARTS OF THIS ITEM (write your summary from "
              "these; do not add facts they do not contain):", ""]
@@ -144,27 +149,43 @@ def parent_prompt(node: dict, child_lines: List[str], parent_ctx: str) -> str:
 
 
 def leaf_prompt(node: dict, parent_ctx: str) -> str:
-    return (f"CONTEXT: {parent_ctx}\nITEM: {node['title']}\n\n"
+    return ("You are writing a catalog entry for an index of FAA regulatory "
+            "and handbook material. Describe the item objectively in the "
+            "third person ('This section prescribes...', 'Chapter 4 "
+            "explains...'). Never mention the user, the prompt, or that text "
+            "was 'provided' or 'shared'. Even for forms, tables, or "
+            "abbreviation lists, state what the item is for and what it "
+            "covers.\n\n"
+            f"CONTEXT: {parent_ctx}\nITEM: {node['title']}\n\n"
             f"FULL TEXT:\n{node['text']}")
+
+
+_META_SUMMARY_RE = re.compile(
+    r"\bthe user\b|you are (?:asking|providing)|text (?:was |is )?(?:provided|shared)",
+    re.I)
 
 
 async def _call(client, prompt: str, semaphore) -> Optional[dict]:
     from openai import APIError
-    async with semaphore:
+    for _attempt in range(2):
+        async with semaphore:
+            try:
+                resp = await client.chat.completions.create(
+                    model=TEACHER_MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3, max_tokens=2048,
+                    response_format=SUMMARY_FORMAT,
+                    extra_body={"reasoning_effort": "low"})
+            except APIError:
+                return None
         try:
-            resp = await client.chat.completions.create(
-                model=TEACHER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3, max_tokens=2048,
-                response_format=SUMMARY_FORMAT,
-                extra_body={"reasoning_effort": "low"})
-        except APIError:
-            return None
-    try:
-        d = json.loads(resp.choices[0].message.content)
-        return d if d.get("summary", "").strip() else None
-    except (json.JSONDecodeError, TypeError):
-        return None
+            d = json.loads(resp.choices[0].message.content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        s = d.get("summary", "").strip()
+        if s and not _META_SUMMARY_RE.search(s):
+            return d
+    return None
 
 
 def load_done(path: Path) -> Dict[str, dict]:
