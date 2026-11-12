@@ -507,10 +507,18 @@ async def link_group(client, pool: CandidatePool, g: dict,
                 "refs": g["refs"]}
     codes = [c for c, _ in g["elements"]] + [f"{g['task_code']} (task)"]
 
-    plan = await _call(client, plan_prompt(rows, query_block(g), g["doc_title"]),
-                       PLAN_FORMAT, semaphore, max_tokens=16384)
-    plan_map = {p["code"]: p for p in (plan or {}).get("codes", [])
-                if p.get("code") in codes}
+    plan_map: Dict[str, dict] = {}
+    for _plan_try in range(3):
+        plan = await _call(client, plan_prompt(rows, query_block(g),
+                                               g["doc_title"]),
+                           PLAN_FORMAT, semaphore, max_tokens=24576)
+        for p in (plan or {}).get("codes", []):
+            code = p.get("code")
+            if (code in codes and p.get("requirements")
+                    and code not in plan_map):
+                plan_map[code] = p
+        if len(plan_map) >= max(1, len(codes) // 2):
+            break
     to_load = [i for p in plan_map.values() for i in p.get("rows", [])]
     if not to_load:  # plan failed -> plain TOC selection fallback
         sel = await _call(client, toc_prompt(rows, query_block(g),
