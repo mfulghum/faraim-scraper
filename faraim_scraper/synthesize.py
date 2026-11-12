@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .citations import SectionIndex, canonical_citation, normalize
-from .dataset import Chunk, build_chunks
+from .dataset import Chunk, build_chunks, build_handbook_chunks
 
 TEACHER_URL = os.environ.get("FARAIM_TEACHER_URL", "http://steakbox.local:8888/v1")
 TEACHER_MODEL = os.environ.get("FARAIM_TEACHER_MODEL", "Qwen3.8-Flash-Next")
@@ -23,8 +23,9 @@ TEACHER_MODEL = os.environ.get("FARAIM_TEACHER_MODEL", "Qwen3.8-Flash-Next")
 PAIR_TYPES = ("factual", "pilot", "crossref", "abstention")
 
 SYSTEM_PROMPT = (
-    "You are generating aviation-regulation training data from provided excerpts of "
-    "14/49 CFR (FAR) and the FAA Aeronautical Information Manual (AIM). "
+    "You are generating aviation training data from provided excerpts of 14/49 CFR "
+    "(FAR), the FAA Aeronautical Information Manual (AIM), and FAA aviation "
+    "handbooks such as the PHAK, AFH and AMT handbooks (FAA-H-8083-x). "
     "STRICT RULES: (1) Use only facts contained in the provided excerpts — never add "
     "numbers, times, minima or requirements not present in them. (2) Every answer must "
     "quote at least one relevant passage VERBATIM in the 'quotes' field and must cite "
@@ -43,10 +44,11 @@ TYPE_INSTRUCTIONS = {
         "canonical citation."
     ),
     "pilot": (
-        "Write ONE question as if asked by a working pilot with no regulatory "
-        "training: colloquial, operational language ('can I', 'do I have to', "
-        "'how recent'). The answer gives the practical answer first, then supports "
-        "it with verbatim quotes and the canonical citation."
+        "Write ONE question as if asked by a working pilot or aviation maintenance "
+        "technician with no regulatory training: colloquial, operational language "
+        "('can I', 'do I have to', 'how recent'). The answer gives the practical "
+        "answer first, then supports it with verbatim quotes and the canonical "
+        "citation."
     ),
     "crossref": (
         "Write ONE question that requires BOTH the PRIMARY excerpt and the RELATED "
@@ -114,6 +116,13 @@ AIM_REF_RE = re.compile(r"\b(?:AIM\s+|paragraph\s+)?(\d+-\d{1,2}-\d{1,3})\b")
 def extract_cross_refs(chunk: Chunk, index: SectionIndex) -> List[str]:
     """Section ids referenced inside a chunk's text, resolvable in the manifest."""
     refs: List[str] = []
+    if chunk.doc == "handbook":
+        # handbooks teach FAR rules: link to the regs they quote
+        for m in FAR_REF_RE.finditer(chunk.text):
+            sid = m.group(1)
+            if index.get(sid) and sid not in refs:
+                refs.append(sid)
+        return refs[:2]
     if chunk.doc == "far":
         for m in FAR_REF_RE.finditer(chunk.text):
             sid = m.group(1)
@@ -222,6 +231,13 @@ async def run(args) -> int:
 
     index = SectionIndex(args.data)
     chunks = build_chunks(args.data)
+    if args.handbooks:
+        hb = build_handbook_chunks(args.data)
+        if not hb:
+            print("warning: --handbooks given but no handbook_chunks.jsonl found")
+        chunks += hb
+    if args.only:
+        chunks = [c for c in chunks if args.only in c.id]
     if args.limit:
         chunks = chunks[: args.limit]
     out_path = Path(args.out)
@@ -266,8 +282,12 @@ def main(argv=None) -> int:
     p.add_argument("--data", type=Path, default=Path("data"))
     p.add_argument("--out", type=Path, default=Path("work/qa_raw.jsonl"))
     p.add_argument("--types", default=",".join(PAIR_TYPES))
+    p.add_argument("--handbooks", action="store_true",
+                   help="also synthesize from handbook chunks (PHAK, AFH, AMT...)")
     p.add_argument("--concurrency", type=int, default=6)
     p.add_argument("--limit", type=int, default=None, help="chunks to process (testing)")
+    p.add_argument("--only", default=None,
+                   help="substring filter on chunk ids (e.g. 'hbk:' for handbooks)")
     args = p.parse_args(argv)
     return asyncio.run(run(args))
 

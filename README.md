@@ -116,6 +116,9 @@ edition per handbook (full volumes preferred over chapter/front-matter splits),
 and chunks each book by chapter with page provenance → `handbook_chunks.jsonl`.
 ~60 books / ~5,500 chunks, including every FAA-H-8083-x the ACSs reference.
 The ACS crosswalk resolves handbook References to specific handbook chunks.
+Handbook chunks also feed QA synthesis: `python -m faraim_scraper.synthesize
+--handbooks --only hbk: --out work/qa_handbooks.jsonl` generates the same four
+validated pair types for every handbook (pilot and mechanic volumes alike).
 
 ## Tests
 

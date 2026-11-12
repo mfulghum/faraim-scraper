@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .citations import SectionIndex, canonical_citation
-from .dataset import Chunk, build_chunks, load_manifest, load_acs_keys_by_section, _corpus_html_path
+from .dataset import (Chunk, build_chunks, build_handbook_chunks, load_manifest,
+                      load_acs_keys_by_section, _corpus_html_path)
 
 SYSTEM_PROMPT = (
     "You are an aviation regulations assistant. Answer pilot questions using ONLY "
@@ -303,6 +304,9 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     index = SectionIndex(data_dir)
     chunks = build_chunks(data_dir)
     chunk_by_id = {c.id: c for c in chunks}
+    # handbook pairs validate against handbook chunks too
+    for c in build_handbook_chunks(data_dir):
+        chunk_by_id.setdefault(c.id, c)
     acs_map = load_acs_keys_by_section(data_dir)
 
     recs = []

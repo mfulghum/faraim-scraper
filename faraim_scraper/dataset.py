@@ -227,8 +227,27 @@ def write_corpus(chunks: List[Chunk], out_dir: Path,
     return counts
 
 
+def build_handbook_chunks(data_dir: Path) -> List[Chunk]:
+    """Handbook chunks as Chunk objects (QA synthesis + dataset joins)."""
+    path = Path(data_dir) / "handbooks" / "handbook_chunks.jsonl"
+    if not path.is_file():
+        return []
+    out: List[Chunk] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        c = json.loads(line)
+        title = f"{c['handbook_title']} — {c.get('chapter_title') or ''}".strip(" —")
+        out.append(Chunk(
+            id=c["id"], text=c["text"], doc="handbook", part=c["handbook"],
+            chapter=str(c["chapter"]), section_id=c["id"], title=title,
+            url="", n_tokens=c.get("n_tokens") or count_tokens(c["text"]),
+            split="train"))
+    return out
+
+
 def _corpus_html_path(chunk: Chunk) -> str:
     """Map a chunk back to its manifest html_path for crosswalk joins."""
+    if chunk.doc == "handbook":
+        return f"handbooks/{chunk.section_id}.html"
     if chunk.doc == "far":
         m = re.search(r"title-\d+/", chunk.url)
         title_dir = m.group(0).rstrip("/") if m else "title-14"

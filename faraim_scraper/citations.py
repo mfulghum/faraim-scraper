@@ -46,7 +46,9 @@ def aim_paragraph_id(section_id: str) -> str:
 
 
 def canonical_citation(record: dict) -> str:
-    """Build the authoritative citation string for a manifest record."""
+    """Build the authoritative citation string for a manifest or chunk record."""
+    if record.get("doc") == "handbook":
+        return canonical_hb_citation(record["chunk"])
     doc, sid, title = record["doc"], record["section_id"], record.get("title")
     clean = _clean_title(title)
     if doc == "far":
@@ -70,6 +72,9 @@ def _far_title_group(record: dict) -> str:
 def citation_variants(record: dict) -> List[str]:
     """Accepted citation spellings, canonical first."""
     doc, sid = record["doc"], record["section_id"]
+    if doc == "handbook":
+        chunk = record["chunk"]
+        return [canonical_hb_citation(chunk)] + hb_citation_variants(chunk)
     if doc == "far":
         g = _far_title_group(record)
         return [f"{g} CFR § {sid}", f"{g} CFR {sid}", f"§ {sid}"]
@@ -80,6 +85,23 @@ def citation_variants(record: dict) -> List[str]:
         return [f"AIM Appendix {n}", f"Appendix {n}"]
     para = aim_paragraph_id(sid)
     return [f"AIM ¶ {para}", f"AIM {para}", para]
+
+
+def canonical_hb_citation(chunk: dict) -> str:
+    """'FAA-H-8083-25C — Pilot's Handbook of Aeronautical Knowledge:
+    Chapter 4, Principles of Flight (pp. 4-1-4-30)'."""
+    ch = f"Chapter {chunk['chapter']}"
+    if chunk.get("chapter_title") and chunk["chapter_title"] != ch:
+        ch += f", {chunk['chapter_title']}"
+    pages = f" (pp. {chunk['pages']})" if chunk.get("pages") else ""
+    return f"{chunk['handbook']} — {chunk['handbook_title']}: {ch}{pages}"
+
+
+def hb_citation_variants(chunk: dict) -> List[str]:
+    v = [f"{chunk['handbook']}, Chapter {chunk['chapter']}",
+         f"{chunk['handbook']} Chapter {chunk['chapter']}",
+         chunk["handbook"]]
+    return v
 
 
 def resolve_section_id(value: str, index: "SectionIndex"):
@@ -125,11 +147,22 @@ class SectionIndex:
             if rec["doc"] == "aim":
                 # also index the short paragraph id ("1-1-9")
                 self.by_id.setdefault(aim_paragraph_id(rec["section_id"]), rec)
+        # handbook chunks join the same id space ('hbk:FAA-H-8083-25C:ch4#3')
+        hb = self.data_dir / "handbooks" / "handbook_chunks.jsonl"
+        if hb.is_file():
+            for line in hb.read_text(encoding="utf-8").splitlines():
+                c = json.loads(line)
+                self.by_id.setdefault(c["id"], {
+                    "doc": "handbook", "section_id": c["id"], "chunk": c,
+                    "part": c["handbook"], "chapter": str(c["chapter"]),
+                    "title": c.get("chapter_title") or c["handbook_title"]})
 
     def get(self, section_id: str) -> Optional[dict]:
         return self.by_id.get(section_id)
 
     def text(self, record: dict) -> str:
+        if record.get("doc") == "handbook":
+            return record["chunk"]["text"]
         return (self.data_dir / record["txt_path"]).read_text(encoding="utf-8")
 
     def quote_in_section(self, quote: str, record: dict) -> bool:

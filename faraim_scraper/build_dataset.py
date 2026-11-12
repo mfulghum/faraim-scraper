@@ -61,7 +61,9 @@ regulations the model never trains on: **14 CFR Parts 105 and 107, AIM Chapter
   IPH, IFH, AMT trio, Aviation Weather Handbook...), deduplicated to one
   edition per handbook with chapter/page provenance
 - QA synthesis: `{teacher}` (local vLLM-compatible server), guided JSON decoding,
-  4 pair types per chunk: factual, pilot-phrased, cross-reference, abstention
+  4 pair types per chunk: factual, pilot-phrased, cross-reference, abstention —
+  applied to FAR/AIM chunks and to every handbook, including the AMT mechanic
+  handbooks (General, Powerplant, Airframe)
 - Filter statistics: `{filter_stats}`
 
 ## Intended use / limitations
@@ -122,10 +124,24 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     raw = args.work / "qa_raw.jsonl"
+    hb_raw = args.work / "qa_handbooks.jsonl"
     clean = args.work / "qa_clean.jsonl"
     if not args.skip_filter:
         index = SectionIndex(args.data)
         stats = filter_file(raw, clean, index)
+        if hb_raw.is_file():
+            hb_clean = args.work / "qa_handbooks_clean.jsonl"
+            stats_hb = filter_file(hb_raw, hb_clean, index)
+            with clean.open("a", encoding="utf-8") as dst, \
+                    hb_clean.open(encoding="utf-8") as src:
+                dst.write(src.read())
+            for key in ("raw_valid", "after_gates", "after_dedupe",
+                        "dropped_duplicates"):
+                if key in stats_hb and key in stats:
+                    stats[key] += stats_hb[key]
+            stats["by_type"] = {k: stats["by_type"].get(k, 0) + v
+                                for k, v in stats_hb["by_type"].items()}
+            stats["handbooks"] = stats_hb
         (args.work / "filter_stats.json").write_text(
             json.dumps(stats, indent=2), encoding="utf-8")
         print("filter stats:", json.dumps({k: v for k, v in stats.items()
