@@ -33,8 +33,15 @@ cited sections must exist, quotes must match the source text verbatim
 | `corpus` | parquet (train/val/test) | {corpus} | continued pretraining, RAG index |
 | `sft` | parquet (train/val/test) | {sft} | conversational SFT/LoRA (context-grounded) |
 | `sft_closed_book` | parquet | {closed} | memorization-style SFT incl. abstention pairs |
+| `acs` | parquet | see acs/ | ACS elements/tasks keyed by test code (e.g. `PA.II.A.K4`) |
 | `retrieval` | jsonl (queries/corpus/qrels) | {retrieval} | bi-encoder fine-tuning (BEIR-style, BM25 hard negatives) |
 | `eval` | jsonl | {gold} | gold eval set (human-reviewable, citation-scored) |
+
+FAR/AIM `corpus` and `sft` rows carry an `acs_keys` field: ACS test codes
+linked to the governing sections via citations and TF-IDF semantic matching
+(see `provenance.json`). ACS docs held out whole for test: Instrument —
+Helicopter (FAA-S-ACS-14) and Flight Instructor–Instrument (FAA-S-ACS-28);
+for validation: both Instrument Rating ACSs.
 
 ## Splits
 
@@ -117,7 +124,13 @@ def main(argv=None) -> int:
             json.dumps(stats, indent=2), encoding="utf-8")
         print("filter stats:", json.dumps({k: v for k, v in stats.items()
                                            if k != "reject_reasons"}))
+    # rebuild corpus (with acs_keys join) then emit the rest
+    from .dataset import build_chunks, write_corpus, load_acs_keys_by_section
+    chunks = build_chunks(args.data)
+    corpus_counts = write_corpus(chunks, args.out,
+                                 acs_keys=load_acs_keys_by_section(args.data))
     summary = emit(args.data, clean, args.out)
+    summary["corpus"] = corpus_counts
     write_card(args.out, summary, {}, args.data)
     write_gitattributes(args.out)
     print("dataset summary:", json.dumps(summary, indent=2))

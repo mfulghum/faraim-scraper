@@ -11,7 +11,7 @@ import os
 import re
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 MAX_CHUNK_TOKENS = 1200
 # Sections like the 49 CFR 172 hazardous materials tables are enormous;
@@ -190,20 +190,51 @@ def build_chunks(data_dir: Path, max_tokens: int = MAX_CHUNK_TOKENS,
     return chunks
 
 
-def write_corpus(chunks: List[Chunk], out_dir: Path) -> dict:
+def load_acs_keys_by_section(data_dir: Path) -> Dict[str, List[str]]:
+    """Reverse crosswalk: FAR/AIM html_path -> ACS test codes (may be absent)."""
+    path = Path(data_dir) / "acs" / "acs_keys_by_section.jsonl"
+    out: Dict[str, List[str]] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(line)
+        out[rec["html_path"]] = rec["acs_keys"]
+    return out
+
+
+def write_corpus(chunks: List[Chunk], out_dir: Path,
+                 acs_keys: Optional[dict] = None) -> dict:
     """Write corpus/{train,val,test}.parquet; return per-split counts."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
+    acs_keys = acs_keys or {}
     out_dir = Path(out_dir)
     (out_dir / "corpus").mkdir(parents=True, exist_ok=True)
     counts = {}
     for split in ("train", "val", "test"):
-        rows = [asdict(c) for c in chunks if c.split == split]
+        rows = []
+        for c in chunks:
+            if c.split != split:
+                continue
+            row = asdict(c)
+            row["acs_keys"] = acs_keys.get(
+                _corpus_html_path(c), [])
+            rows.append(row)
         table = pa.Table.from_pylist(rows) if rows else pa.table({k: pa.array([], type=pa.string()) for k in Chunk.__dataclass_fields__})
         pq.write_table(table, out_dir / "corpus" / f"{split}.parquet")
         counts[split] = len(rows)
     return counts
+
+
+def _corpus_html_path(chunk: Chunk) -> str:
+    """Map a chunk back to its manifest html_path for crosswalk joins."""
+    if chunk.doc == "far":
+        m = re.search(r"title-\d+/", chunk.url)
+        title_dir = m.group(0).rstrip("/") if m else "title-14"
+        return (f"far/{title_dir}/part-{chunk.part}/"
+                f"section-{chunk.section_id}.html")
+    return f"aim/{chunk.chapter}/{chunk.section_id}.html"
 
 
 def main(argv=None) -> int:
@@ -216,7 +247,8 @@ def main(argv=None) -> int:
     p.add_argument("--max-tokens", type=int, default=MAX_CHUNK_TOKENS)
     args = p.parse_args(argv)
     chunks = build_chunks(args.data, max_tokens=args.max_tokens)
-    counts = write_corpus(chunks, args.out)
+    counts = write_corpus(chunks, args.out,
+                          acs_keys=load_acs_keys_by_section(args.data))
     print(f"chunks: {sum(counts.values())} ({', '.join(f'{k}={v}' for k, v in counts.items())})")
     print(f"corpus written to {args.out}/corpus/")
     return 0

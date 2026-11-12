@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .citations import SectionIndex, canonical_citation
-from .dataset import Chunk, build_chunks, load_manifest
+from .dataset import Chunk, build_chunks, load_manifest, load_acs_keys_by_section, _corpus_html_path
 
 SYSTEM_PROMPT = (
     "You are an aviation regulations assistant. Answer pilot questions using ONLY "
@@ -21,6 +21,11 @@ SYSTEM_PROMPT = (
     "'AIM ¶ 3-1-4 ...'). If the provided excerpts do not cover the question, say "
     "so and point to the section that likely does."
 )
+
+# ACS docs held out whole, mirroring the FAR/AIM unit holdouts.
+ACS_TEST_PDFS = {"instrument_helicopter_acs_14.pdf", "cfii_pl_acs_28.pdf"}
+ACS_VAL_PDFS = {"instrument_rating_airplane_acs_8.pdf", "instrument_pl_acs_3.pdf"}
+MAX_ACS_KEYS_PER_RECORD = 12
 
 HARD_NEGATIVE_TOKENS = 300
 GOLD_PER_TEST_CHUNK = 2
@@ -60,8 +65,28 @@ def _format_excerpts(sections: List[Dict[str, str]], index: SectionIndex) -> str
     return "\n\n".join(blocks)
 
 
+def _acs_keys_for(sections: List[Dict[str, str]], acs_map: Dict[str, List[str]],
+                  chunk_by_id: Dict[str, Chunk]) -> List[str]:
+    """ACS test codes relevant to the sections shown in a record's context."""
+    keys: List[str] = []
+    for sec in sections:
+        rec_chunk = None
+        for cid, c in chunk_by_id.items():
+            if c.section_id == sec["section_id"]:
+                rec_chunk = c
+                break
+        if rec_chunk is None:
+            continue
+        for code in acs_map.get(_corpus_html_path(rec_chunk), []):
+            if code not in keys:
+                keys.append(code)
+    return keys[:MAX_ACS_KEYS_PER_RECORD]
+
+
 def build_sft_records(recs: List[dict], chunk_by_id: Dict[str, Chunk],
-                      index: SectionIndex) -> List[dict]:
+                      index: SectionIndex,
+                      acs_map: Optional[Dict[str, List[str]]] = None) -> List[dict]:
+    acs_map = acs_map or {}
     out = []
     for rec in recs:
         if rec["type"] == "abstention":
@@ -80,11 +105,14 @@ def build_sft_records(recs: List[dict], chunk_by_id: Dict[str, Chunk],
                 {"role": "assistant", "content": pair["answer"]},
             ],
             "citations": pair["citations"],
+            "acs_keys": _acs_keys_for(sections, acs_map, chunk_by_id),
         })
     return out
 
 
-def build_closed_book_records(recs: List[dict], chunk_by_id: Dict[str, Chunk]) -> List[dict]:
+def build_closed_book_records(recs: List[dict], chunk_by_id: Dict[str, Chunk],
+                              acs_map: Optional[Dict[str, List[str]]] = None) -> List[dict]:
+    acs_map = acs_map or {}
     out = []
     for rec in recs:
         pair = rec["pair"]
@@ -98,7 +126,52 @@ def build_closed_book_records(recs: List[dict], chunk_by_id: Dict[str, Chunk]) -
                 {"role": "assistant", "content": pair["answer"]},
             ],
             "citations": pair["citations"],
+            "acs_keys": [k for k in acs_map.get(_corpus_html_path(chunk), [])
+                        ][:MAX_ACS_KEYS_PER_RECORD],
         })
+    return out
+
+
+def build_acs_records(acs_dir: Path) -> List[dict]:
+    """ACS elements/tasks as corpus-style records keyed by ACS test code."""
+    acs_dir = Path(acs_dir)
+    out: List[dict] = []
+
+    def split_for(pdf: str) -> str:
+        if pdf in ACS_TEST_PDFS:
+            return "test"
+        if pdf in ACS_VAL_PDFS:
+            return "val"
+        return "train"
+
+    epath = acs_dir / "acs_elements.jsonl"
+    if epath.is_file():
+        for line in epath.read_text(encoding="utf-8").splitlines():
+            e = json.loads(line)
+            text = (f"{e.get('area_title','')} — {e.get('task_title','')}: {e['text']}"
+                    if e.get("area_title") else e["text"])
+            out.append({
+                "id": f"acs:{e['code']}", "split": split_for(e.get("pdf", "")),
+                "kind": "element", "code": e["code"], "category": e.get("category"),
+                "elem_type": e.get("elem_type"), "doc_id": e.get("doc_id"),
+                "doc_title": e.get("doc_title"), "pdf": e.get("pdf"),
+                "area_title": e.get("area_title"), "task_title": e.get("task_title"),
+                "text": text,
+            })
+    tpath = acs_dir / "acs_tasks.jsonl"
+    if tpath.is_file():
+        for line in tpath.read_text(encoding="utf-8").splitlines():
+            t = json.loads(line)
+            text = " ".join(x for x in (t.get("objective", ""),
+                                        "References: " + "; ".join(t.get("refs", [])))
+                            if x).strip()
+            out.append({
+                "id": f"acs:{t['code']} (task)", "split": split_for(t.get("pdf", "")),
+                "kind": "task", "code": t["code"], "category": None,
+                "elem_type": None, "doc_id": None, "doc_title": None,
+                "pdf": t.get("pdf"), "area_title": t.get("area_title"),
+                "task_title": t.get("task_title"), "text": text,
+            })
     return out
 
 
@@ -202,6 +275,7 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     index = SectionIndex(data_dir)
     chunks = build_chunks(data_dir)
     chunk_by_id = {c.id: c for c in chunks}
+    acs_map = load_acs_keys_by_section(data_dir)
 
     recs = []
     with qa_path.open(encoding="utf-8") as fh:
@@ -210,11 +284,16 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
             if rec["chunk_id"] in chunk_by_id:
                 recs.append(rec)
 
-    summary: dict = {"qa_pairs": len(recs)}
-    sft = build_sft_records(recs, chunk_by_id, index)
-    closed = build_closed_book_records(recs, chunk_by_id)
+    summary: dict = {"qa_pairs": len(recs),
+                     "sections_with_acs_keys": len(acs_map)}
+    sft = build_sft_records(recs, chunk_by_id, index, acs_map)
+    closed = build_closed_book_records(recs, chunk_by_id, acs_map)
     summary["sft"] = write_parquet_split(sft, out_dir, "sft")
     summary["sft_closed_book"] = write_parquet_split(closed, out_dir, "sft_closed_book")
+
+    acs_records = build_acs_records(Path(data_dir) / "acs")
+    if acs_records:
+        summary["acs"] = write_parquet_split(acs_records, out_dir, "acs")
 
     retrieval = build_retrieval_records(recs, chunks, chunk_by_id)
     write_jsonl(out_dir / "retrieval" / "queries.jsonl", retrieval["queries"])
@@ -234,7 +313,7 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     write_json(out_dir / "provenance.json", {
         "scrape": scrape_info,
         "dataset": {"generated_configs": ["corpus", "sft", "sft_closed_book",
-                                          "retrieval", "eval"]},
+                                          "acs", "retrieval", "eval"]},
     })
     return summary
 
