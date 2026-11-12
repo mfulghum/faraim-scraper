@@ -113,6 +113,14 @@ def test_verify_prompt_flags_missing_links():
     assert "HI.II.M.K3 requires:" in req and "HI.II.M.K4" not in req
 
 
+def test_requirement_sections_named_by_answer_key():
+    from faraim_scraper.acs_link_teacher import requirement_sections
+    assert requirement_sections([
+        "14 CFR 91.205(c) — night VFR equipment",
+        "position lights, FAR 91.209; AIM 8-1-5; see § 61.57"]) == {
+        "91.205", "91.209", "61.57"}
+
+
 def test_build_groups(tmp_path):
     acs = tmp_path / "acs"
     acs.mkdir()

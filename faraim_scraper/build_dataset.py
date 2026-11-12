@@ -35,6 +35,7 @@ cited sections must exist, quotes must match the source text verbatim
 | `sft_closed_book` | parquet | {closed} | memorization-style SFT incl. abstention pairs |
 | `acs` | parquet | see acs/ | ACS elements/tasks keyed by test code (e.g. `PA.II.A.K4`) |
 | `handbooks` | parquet | see handbooks/ | FAA-H-8083-x handbook chunks (PHAK, AFH, HFH, AMT, weather…) with chapter/page provenance |
+| `summaries` | parquet | see summaries/ | hierarchical summary tree (part/chapter → section → subsection) for semantic navigation |
 | `retrieval` | jsonl (queries/corpus/qrels) | {retrieval} | bi-encoder fine-tuning (BEIR-style, BM25 hard negatives) |
 | `eval` | jsonl | {gold} | gold eval set (human-reviewable, citation-scored) |
 
@@ -151,7 +152,7 @@ def main(argv=None) -> int:
     chunks = build_chunks(args.data)
     corpus_counts = write_corpus(chunks, args.out,
                                  acs_keys=load_acs_keys_by_section(args.data))
-    summary = emit(args.data, clean, args.out)
+    summary = emit(args.data, clean, args.out, work_dir=args.work)
     summary["corpus"] = corpus_counts
     write_card(args.out, summary, {}, args.data)
     write_gitattributes(args.out)

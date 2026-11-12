@@ -176,6 +176,22 @@ def build_acs_records(acs_dir: Path) -> List[dict]:
     return out
 
 
+def build_summary_records(work_dir: Path) -> List[dict]:
+    """Teacher-written hierarchical summary tree nodes (semantic tree config)."""
+    path = Path(work_dir) / "summaries.jsonl"
+    out: List[dict] = []
+    if not path.is_file():
+        return out
+    seen = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        r = json.loads(line)
+        if r["id"] in seen:
+            continue
+        seen.add(r["id"])
+        out.append({k: v for k, v in r.items() if k != "n_tokens_src"})
+    return out
+
+
 def build_handbook_records(data_dir: Path) -> List[dict]:
     """Handbook chunks (PHAK, AFH, AMT, weather...) as corpus-style records."""
     path = Path(data_dir) / "handbooks" / "handbook_chunks.jsonl"
@@ -300,7 +316,8 @@ def write_parquet_split(rows: List[dict], out_dir: Path, name: str) -> Dict[str,
     return counts
 
 
-def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
+def emit(data_dir: Path, qa_path: Path, out_dir: Path,
+         work_dir: Optional[Path] = None) -> dict:
     index = SectionIndex(data_dir)
     chunks = build_chunks(data_dir)
     chunk_by_id = {c.id: c for c in chunks}
@@ -331,6 +348,12 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     if handbook_records:
         summary["handbooks"] = write_parquet_split(handbook_records, out_dir, "handbooks")
 
+    if work_dir is not None:
+        summary_records = build_summary_records(work_dir)
+        if summary_records:
+            summary["summaries"] = write_parquet_split(summary_records, out_dir,
+                                                       "summaries")
+
     retrieval = build_retrieval_records(recs, chunks, chunk_by_id, handbook_records)
     write_jsonl(out_dir / "retrieval" / "queries.jsonl", retrieval["queries"])
     write_jsonl(out_dir / "retrieval" / "corpus.jsonl", retrieval["corpus"])
@@ -349,7 +372,8 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     write_json(out_dir / "provenance.json", {
         "scrape": scrape_info,
         "dataset": {"generated_configs": ["corpus", "sft", "sft_closed_book",
-                                          "acs", "handbooks", "retrieval", "eval"]},
+                                          "acs", "handbooks", "summaries",
+                                          "retrieval", "eval"]},
     })
     return summary
 

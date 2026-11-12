@@ -114,21 +114,48 @@ VERIFY_FORMAT = {
     "json_schema": {"name": "coverage_check", "strict": True, "schema": {
         "type": "object",
         "properties": {
-            "missing": {"type": "array", "items": {
+            "checks": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
                     "code": {"type": "string"},
                     "requirement": {"type": "string"},
+                    "covered": {"type": "boolean",
+                                "description": "true ONLY if one of the code's "
+                                               "quotes actually states this "
+                                               "requirement"},
                     "rows": {"type": "array", "items": {"type": "integer"},
-                             "description": "TOC rows to load that would "
-                                            "supply this requirement"},
+                             "description": "TOC rows to load when not covered"},
                 },
-                "required": ["code", "requirement", "rows"],
+                "required": ["code", "requirement", "covered", "rows"],
                 "additionalProperties": False}},
         },
-        "required": ["missing"], "additionalProperties": False,
+        "required": ["checks"], "additionalProperties": False,
     }},
 }
+
+GAP_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {"name": "gap_quote", "strict": True, "schema": {
+        "type": "object",
+        "properties": {
+            "quote": {"type": "string",
+                      "description": "one short sentence copied VERBATIM from "
+                                     "the passage that states this requirement"},
+        },
+        "required": ["quote"], "additionalProperties": False,
+    }},
+}
+
+# 'night VFR equipment, 14 CFR 91.205(c)' -> deterministic section target
+REQ_SEC_RE = re.compile(r"(?:14 CFR|FAR)\s*§?\s*(\d+\.\d+)|§\s*(\d+\.\d+)")
+
+
+def requirement_sections(reqs: List[str]) -> set:
+    out = set()
+    for r in reqs:
+        for m in REQ_SEC_RE.finditer(r):
+            out.add(m.group(1) or m.group(2))
+    return out
 
 
 def parse_scope(refs: List[str]) -> Dict:
@@ -408,27 +435,28 @@ async def _call(client, prompt: str, response_format, semaphore,
 
 def verify_prompt(codes: List[str], plan_map: Dict[str, dict],
                   links: List[dict], toc_lines: List[str]) -> str:
-    lines = ["You are the checking inspector. For each ACS code, the required "
-             "answer points and the links found so far (section + verbatim "
-             "quote) are listed. A code FAILS if any required point is not "
-             "actually supported by one of its quotes, or if it has no links "
-             "at all. List every failing (code, requirement) pair as missing, "
-             "with the TOC row numbers (from the contents list, preferring "
-             "rows NOT marked *) whose full text would supply it.", ""]
+    lines = ["You are the checking inspector. Decide, for EACH (code, "
+             "requirement) pair below, whether the code's quoted links "
+             "actually STATE that requirement. A general topical link does "
+             "NOT cover a specific requirement — the quote must contain the "
+             "substance (numbers, equipment lists, duties). Set covered=false "
+             "and suggest TOC rows (prefer rows not marked *) whenever the "
+             "requirement is unsupported.", ""]
     by_code: Dict[str, List[dict]] = defaultdict(list)
     for l in links:
         by_code[l["code"]].append(l)
     for c in codes:
         reqs = (plan_map.get(c) or {}).get("requirements") or []
-        lines.append(f"CODE {c}")
-        lines.append("  required: " + ("; ".join(reqs) if reqs
-                                       else "(plan empty — check the code is answered at all)"))
-        if by_code.get(c):
-            for l in by_code[c]:
-                lines.append(f"  link: {l['section_id']} :: \"{l['quote']}\"")
-        else:
-            lines.append("  link: (none)")
-        lines.append("")
+        if not reqs:
+            reqs = ["(code has no planned requirements — is it answered at "
+                    "all by the links?)"]
+        linked = by_code.get(c, [])
+        quote_lines = ([f"  link: {l['section_id']} :: \"{l['quote']}\""
+                        for l in linked] or ["  link: (none)"])
+        for r in reqs:
+            lines.append(f"PAIR code={c} | requirement={r}")
+            lines += quote_lines
+            lines.append("")
     lines += ["CONTENTS OF THE REFERENCED DOCUMENTS (* = already loaded):",
               "\n".join(toc_lines)]
     return "\n".join(lines)
@@ -497,17 +525,70 @@ async def link_group(client, pool: CandidatePool, g: dict,
         if len(passages) == before:
             break
 
+    async def gap_fill() -> None:
+        """Requirements that NAME a section (14 CFR 91.205(c)) are enforced
+        mechanically: demand a verbatim quote from that exact section."""
+        for c in codes:
+            reqs = (plan_map.get(c) or {}).get("requirements") or []
+            want = requirement_sections(reqs)
+            have = {l["section_id"] for l in links if l["code"] == c}
+            for sid in sorted(want - have):
+                def matches():
+                    return [p for p in passages
+                            if p["kind"] == "far" and p["section_id"] == sid]
+                cand = matches()
+                if not cand:
+                    ri = next((i for i, r in enumerate(rows, 1)
+                               if r["kind"] == "far"
+                               and r["section_id"] == sid), None)
+                    if ri:
+                        pool.load_selected(rows, [ri], loaded, passages)
+                        cand = matches()
+                if not cand:
+                    continue
+                p = cand[0]
+                res = await _call(client,
+                                  f"PASSAGE ({p['cite']}):\n{p['text']}\n\n"
+                                  f"REQUIREMENT for {c}: {'; '.join(reqs)}\n\n"
+                                  "Return ONE short sentence copied VERBATIM "
+                                  "from the passage above that a complete FAA "
+                                  "exam answer would cite for this "
+                                  "requirement.",
+                                  GAP_FORMAT, semaphore, max_tokens=4096,
+                                  effort="low")
+                q = ((res or {}).get("quote") or "").strip()
+                if q and normalize(q) in normalize(p["text"]):
+                    key = (c, p["html_path"])
+                    if key not in seen:
+                        seen.add(key)
+                        links.append({"code": c, "type": p["kind"],
+                                      "section_id": p["section_id"],
+                                      "title": p["title"],
+                                      "html_path": p["html_path"],
+                                      "url": p["url"], "quote": q,
+                                      "evidence": "llm gap-fill",
+                                      "strength": 3})
+
+    await gap_fill()
+
     failing = False
     for _ in range(max_verify_rounds):
         ver = await _call(client, verify_prompt(codes, plan_map, links,
                                                 _toc_lines(rows, loaded)),
-                          VERIFY_FORMAT, semaphore, max_tokens=8192)
-        missing = (ver or {}).get("missing", [])
+                          VERIFY_FORMAT, semaphore, max_tokens=12288)
+        checks = (ver or {}).get("checks", [])
+        missing = [ch for ch in checks if not ch.get("covered")]
         failing = bool(missing)
         extra: List[int] = []
         for m in missing:
             extra += [i for i in m.get("rows", [])
                       if isinstance(i, int) and i not in loaded]
+        # codes left with zero links: retry with their planned rows
+        for m in missing:
+            mc = m.get("code")
+            if not any(l["code"] == mc for l in links):
+                extra += [i for i in (plan_map.get(mc) or {}).get("rows", [])
+                          if isinstance(i, int) and i not in loaded]
         if not extra:
             break
         before = len(passages)
@@ -515,6 +596,7 @@ async def link_group(client, pool: CandidatePool, g: dict,
         if len(passages) == before:
             break
         await link_round()
+        await gap_fill()
 
     return {"group": g["gid"], "links": links, "refs": g["refs"],
             "requirements": {c: p.get("requirements", [])
