@@ -170,9 +170,13 @@ def parse_scope(refs: List[str]) -> Dict:
 
 
 class CandidatePool:
-    """TOC rows for one scope, built once and cached by scope signature."""
+    """TOC rows for one scope, built once and cached by scope signature.
 
-    def __init__(self, data_dir: Path):
+    Optionally enriched with summary-tree hints (work/summaries.jsonl) so the
+    reader sees a catalog blurb per candidate, not just a bare heading.
+    """
+
+    def __init__(self, data_dir: Path, summaries_file: Optional[Path] = None):
         self.data_dir = Path(data_dir)
         self.sections = [json.loads(l) for l in
                          (self.data_dir / "manifest.jsonl").read_text(
@@ -183,6 +187,17 @@ class CandidatePool:
             self.hb_chunks = [json.loads(l) for l in
                               hb_path.read_text(encoding="utf-8").splitlines()]
         self._rows_cache: Dict[tuple, List[dict]] = {}
+        self.hints: Dict[str, str] = {}
+        if summaries_file and Path(summaries_file).is_file():
+            for l in Path(summaries_file).read_text(
+                    encoding="utf-8").splitlines():
+                try:
+                    r = json.loads(l)
+                except json.JSONDecodeError:
+                    continue
+                if (r.get("level") in ("section", "subsection")
+                        and r.get("section_id") and r.get("summary")):
+                    self.hints.setdefault(r["section_id"], r["summary"])
 
     def _hb_keys(self, codes: List[str]) -> set:
         keys = set()
@@ -209,6 +224,7 @@ class CandidatePool:
                     "title": raw_title,
                     "cite": (f"14 CFR § {rec['section_id']} "
                              f"{clean_title}").strip(),
+                    "hint": self.hints.get(rec["section_id"], "")[:240],
                     "html_path": rec["html_path"], "url": rec["url"],
                     "txt_path": rec["txt_path"], "chunks": None})
             elif rec["doc"] == "aim" and (
@@ -219,6 +235,7 @@ class CandidatePool:
                     "kind": "aim", "section_id": rec["section_id"],
                     "title": rec.get("title") or rec["section_id"],
                     "cite": f"AIM {(rec.get('title') or '')}".strip(),
+                    "hint": self.hints.get(rec["section_id"], "")[:240],
                     "html_path": rec["html_path"], "url": rec["url"],
                     "txt_path": rec["txt_path"], "chunks": None})
         want = self._hb_keys(scope["hb_codes"])
@@ -232,9 +249,11 @@ class CandidatePool:
                 "title": f"{c['handbook_title']} — {c.get('chapter_title') or 'Chapter ' + str(c['chapter'])}",
                 "cite": f"{c['handbook']} — {c['handbook_title']}: Chapter "
                         f"{c['chapter']} (pp. {c.get('pages', '?')})",
-                "html_path": f"handbooks/{c['handbook']}", "url": "",
+                "hint": "", "html_path": f"handbooks/{c['handbook']}", "url": "",
                 "txt_path": None, "chunks": []})
             ch["chunks"].append(c)
+            if len(ch["hint"]) < 400:
+                ch["hint"] += " " + self.hints.get(c["id"], "")[:120]
         rows.extend(chapters.values())
         self._rows_cache[sig] = rows
         return rows
@@ -279,18 +298,24 @@ class CandidatePool:
                                  "title": r["title"]})
 
 
+def _row_lines(rows: List[dict]) -> List[str]:
+    out = []
+    for i, r in enumerate(rows, 1):
+        hint = (r.get("hint") or "").strip()
+        if not hint and r["kind"] == "handbook" and r["chunks"]:
+            hint = r["chunks"][0]["text"][:120].replace("\n", " ")
+        preview = f" :: {hint[:240]}" if hint else ""
+        out.append(f"[{i}] {r['cite']}{preview}")
+    return out
+
+
 def toc_prompt(rows: List[dict], query_block: str, doc_title: str) -> str:
     lines = [f"ACS DOCUMENT: {doc_title}", "", query_block, "",
              "CANDIDATE PASSAGES (table of contents of the documents listed in "
              "the ACS References). Pick the row numbers of passages that could "
              "contain the governing or teaching text for ANY of the codes "
              "above. Be inclusive but not indiscriminate (max ~12):", ""]
-    for i, r in enumerate(rows, 1):
-        preview = ""
-        if r["kind"] == "handbook" and r["chunks"]:
-            first = r["chunks"][0]["text"][:120].replace("\n", " ")
-            preview = f" :: {first}..."
-        lines.append(f"[{i}] {r['cite']}{preview}")
+    lines += _row_lines(rows)
     return "\n".join(lines)
 
 
@@ -525,51 +550,99 @@ async def link_group(client, pool: CandidatePool, g: dict,
         if len(passages) == before:
             break
 
-    async def gap_fill() -> None:
-        """Requirements that NAME a section (14 CFR 91.205(c)) are enforced
-        mechanically: demand a verbatim quote from that exact section."""
-        for c in codes:
-            reqs = (plan_map.get(c) or {}).get("requirements") or []
-            want = requirement_sections(reqs)
-            have = {l["section_id"] for l in links if l["code"] == c}
-            for sid in sorted(want - have):
-                def matches():
-                    return [p for p in passages
-                            if p["kind"] == "far" and p["section_id"] == sid]
-                cand = matches()
-                if not cand:
-                    ri = next((i for i, r in enumerate(rows, 1)
-                               if r["kind"] == "far"
-                               and r["section_id"] == sid), None)
-                    if ri:
-                        pool.load_selected(rows, [ri], loaded, passages)
-                        cand = matches()
-                if not cand:
-                    continue
-                p = cand[0]
+def named_paragraph(text: str, req: str, sid: str) -> Optional[str]:
+    """For a requirement naming 91.205(c), return the section's '(c)' block —
+    verbatim by construction, used as mechanical gap-fill fallback."""
+    m = re.search(re.escape(sid) + r"\s*\(([a-z0-9]{1,3})\)", req)
+    marker = f"({m.group(1)})" if m else None
+    if marker:
+        start = re.search(rf"^\s*{re.escape(marker)}\s", text, re.M)
+        if start:
+            rest = text[start.start():]
+            nxt = re.search(r"^\s*\([a-z0-9]{1,3}\)\s", rest[1:], re.M)
+            block = rest[:nxt.start() + 1] if nxt else rest
+            block = block.strip()
+            if block:
+                return block[:400]
+    # no (or unmatched) paragraph marker: lead sentence of the section
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line) > 60 and not line.startswith("§"):
+            return line[:400]
+    return None
+
+
+async def gap_fill(client, pool: CandidatePool, codes: List[str],
+                   plan_map: Dict[str, dict], rows: List[dict],
+                   loaded: set, passages: List[dict], links: List[dict],
+                   seen: set, semaphore) -> List[dict]:
+    """Requirements that NAME a section (14 CFR 91.205(c)) are enforced
+    mechanically: demand a verbatim quote from that exact section, falling
+    back to the named paragraph's own text if the teacher paraphrases."""
+    log: List[dict] = []
+    for c in codes:
+        reqs = (plan_map.get(c) or {}).get("requirements") or []
+        want = requirement_sections(reqs)
+        have = {l["section_id"] for l in links if l["code"] == c}
+        for sid in sorted(want - have):
+            def matches():
+                return [p for p in passages
+                        if p["kind"] == "far" and p["section_id"] == sid]
+            cand = matches()
+            if not cand:
+                ri = next((i for i, r in enumerate(rows, 1)
+                           if r["kind"] == "far"
+                           and r["section_id"] == sid), None)
+                if ri:
+                    pool.load_selected(rows, [ri], loaded, passages)
+                    cand = matches()
+            entry = {"code": c, "section_id": sid}
+            if not cand:
+                entry["ok"] = False
+                entry["reason"] = "section-not-in-scope"
+                log.append(entry)
+                continue
+            p = cand[0]
+            quote = ""
+            evidence = "llm gap-fill"
+            for _try in range(2):
                 res = await _call(client,
                                   f"PASSAGE ({p['cite']}):\n{p['text']}\n\n"
                                   f"REQUIREMENT for {c}: {'; '.join(reqs)}\n\n"
-                                  "Return ONE short sentence copied VERBATIM "
-                                  "from the passage above that a complete FAA "
-                                  "exam answer would cite for this "
-                                  "requirement.",
+                                  "Copy VERBATIM, word for word, ONE short "
+                                  "sentence from the passage above that a "
+                                  "complete FAA exam answer would cite for "
+                                  "this requirement. Do not change any words.",
                                   GAP_FORMAT, semaphore, max_tokens=4096,
                                   effort="low")
                 q = ((res or {}).get("quote") or "").strip()
                 if q and normalize(q) in normalize(p["text"]):
-                    key = (c, p["html_path"])
-                    if key not in seen:
-                        seen.add(key)
-                        links.append({"code": c, "type": p["kind"],
-                                      "section_id": p["section_id"],
-                                      "title": p["title"],
-                                      "html_path": p["html_path"],
-                                      "url": p["url"], "quote": q,
-                                      "evidence": "llm gap-fill",
-                                      "strength": 3})
+                    quote, evidence = q, "llm gap-fill"
+                    break
+            if not quote:  # mechanical fallback: the named paragraph itself
+                block = named_paragraph(p["text"], " ".join(reqs), sid)
+                if block and normalize(block) in normalize(p["text"]):
+                    quote, evidence = block, "llm gap-fill (auto-quote)"
+            entry["ok"] = bool(quote)
+            if not quote:
+                entry["reason"] = "quote-unavailable"
+                log.append(entry)
+                continue
+            entry["evidence"] = evidence
+            log.append(entry)
+            key = (c, p["html_path"])
+            if key not in seen:
+                seen.add(key)
+                links.append({"code": c, "type": p["kind"],
+                              "section_id": p["section_id"],
+                              "title": p["title"],
+                              "html_path": p["html_path"],
+                              "url": p["url"], "quote": quote,
+                              "evidence": evidence, "strength": 3})
+    return log
 
-    await gap_fill()
+    gap_log = await gap_fill(client, pool, codes, plan_map, rows, loaded,
+                             passages, links, seen, semaphore)
 
     failing = False
     for _ in range(max_verify_rounds):
@@ -596,9 +669,11 @@ async def link_group(client, pool: CandidatePool, g: dict,
         if len(passages) == before:
             break
         await link_round()
-        await gap_fill()
+        gap_log += await gap_fill(client, pool, codes, plan_map, rows, loaded,
+                                  passages, links, seen, semaphore)
 
     return {"group": g["gid"], "links": links, "refs": g["refs"],
+            "gap_fill": gap_log,
             "requirements": {c: p.get("requirements", [])
                              for c, p in plan_map.items()},
             "coverage_incomplete": failing,
