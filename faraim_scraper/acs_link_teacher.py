@@ -258,6 +258,28 @@ class CandidatePool:
         self._rows_cache[sig] = rows
         return rows
 
+    def load_section_by_id(self, sid: str, passages: List[dict]) -> bool:
+        """Load a FAR section directly from the scrape by id, even when the
+        task's References did not scope it (answer key named it)."""
+        for rec in self.sections:
+            if rec["doc"] == "far" and rec["section_id"] == sid:
+                try:
+                    text = (self.data_dir / rec["txt_path"]).read_text(
+                        encoding="utf-8").strip()
+                except OSError:
+                    return False
+                if not text:
+                    return False
+                title = re.sub(rf"^§\s*{re.escape(sid)}\s*", "",
+                               rec.get("title") or "").strip()
+                passages.append({
+                    "cite": (f"14 CFR § {sid} {title}").strip(),
+                    "kind": "far", "section_id": sid, "text": text,
+                    "html_path": rec["html_path"], "url": rec["url"],
+                    "title": rec.get("title") or sid})
+                return True
+        return False
+
     def load_selected(self, rows: List[dict], ids: List[int],
                       loaded: set, passages: List[dict]) -> None:
         """Expand TOC rows into full text, appending to `passages` (budgeted).
@@ -645,8 +667,14 @@ async def gap_fill(client, pool: CandidatePool, codes: List[str],
                     cand = matches()
             entry = {"code": c, "section_id": sid}
             if not cand:
+                # answer key named a section outside the task's References:
+                # load it anyway, flagged for review
+                if pool.load_section_by_id(sid, passages):
+                    cand = matches()
+                    entry["out_of_scope"] = True
+            if not cand:
                 entry["ok"] = False
-                entry["reason"] = "section-not-in-scope"
+                entry["reason"] = "section-not-found"
                 log.append(entry)
                 continue
             p = cand[0]

@@ -97,6 +97,17 @@ def test_prompts_and_toc_marks(tmp_path):
     assert "load_more" in lp
 
 
+def test_load_section_by_id_outside_scope(tmp_path):
+    pool = CandidatePool(_data(tmp_path))
+    passages: list = []
+    assert pool.load_section_by_id("91.209", passages)
+    assert passages[0]["section_id"] == "91.209"
+    assert "sunset to sunrise" in passages[0]["text"]
+    assert passages[0]["cite"] == "14 CFR § 91.209 Aircraft lights."
+    assert pool.load_section_by_id("99.99", passages) is False
+    assert len(passages) == 1
+
+
 def test_verify_prompt_flags_missing_links():
     from faraim_scraper.acs_link_teacher import verify_prompt, _plan_requirement_lines
     codes = ["HI.II.M.K3", "HI.II.M.K4"]
