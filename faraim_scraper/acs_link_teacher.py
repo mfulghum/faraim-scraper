@@ -550,6 +550,45 @@ async def link_group(client, pool: CandidatePool, g: dict,
         if len(passages) == before:
             break
 
+    gap_log = await gap_fill(client, pool, codes, plan_map, rows, loaded,
+                             passages, links, seen, semaphore)
+
+    failing = False
+    for _ in range(max_verify_rounds):
+        ver = await _call(client, verify_prompt(codes, plan_map, links,
+                                                _toc_lines(rows, loaded)),
+                          VERIFY_FORMAT, semaphore, max_tokens=12288)
+        checks = (ver or {}).get("checks", [])
+        missing = [ch for ch in checks if not ch.get("covered")]
+        failing = bool(missing)
+        extra: List[int] = []
+        for m in missing:
+            extra += [i for i in m.get("rows", [])
+                      if isinstance(i, int) and i not in loaded]
+        # codes left with zero links: retry with their planned rows
+        for m in missing:
+            mc = m.get("code")
+            if not any(l["code"] == mc for l in links):
+                extra += [i for i in (plan_map.get(mc) or {}).get("rows", [])
+                          if isinstance(i, int) and i not in loaded]
+        if not extra:
+            break
+        before = len(passages)
+        pool.load_selected(rows, extra[:12], loaded, passages)
+        if len(passages) == before:
+            break
+        await link_round()
+        gap_log += await gap_fill(client, pool, codes, plan_map, rows, loaded,
+                                  passages, links, seen, semaphore)
+
+    return {"group": g["gid"], "links": links, "refs": g["refs"],
+            "gap_fill": gap_log,
+            "requirements": {c: p.get("requirements", [])
+                             for c, p in plan_map.items()},
+            "coverage_incomplete": failing,
+            "loaded_rows": sorted(loaded), "passages": len(passages)}
+
+
 def named_paragraph(text: str, req: str, sid: str) -> Optional[str]:
     """For a requirement naming 91.205(c), return the section's '(c)' block —
     verbatim by construction, used as mechanical gap-fill fallback."""
@@ -641,44 +680,6 @@ async def gap_fill(client, pool: CandidatePool, codes: List[str],
                               "evidence": evidence, "strength": 3})
     return log
 
-    gap_log = await gap_fill(client, pool, codes, plan_map, rows, loaded,
-                             passages, links, seen, semaphore)
-
-    failing = False
-    for _ in range(max_verify_rounds):
-        ver = await _call(client, verify_prompt(codes, plan_map, links,
-                                                _toc_lines(rows, loaded)),
-                          VERIFY_FORMAT, semaphore, max_tokens=12288)
-        checks = (ver or {}).get("checks", [])
-        missing = [ch for ch in checks if not ch.get("covered")]
-        failing = bool(missing)
-        extra: List[int] = []
-        for m in missing:
-            extra += [i for i in m.get("rows", [])
-                      if isinstance(i, int) and i not in loaded]
-        # codes left with zero links: retry with their planned rows
-        for m in missing:
-            mc = m.get("code")
-            if not any(l["code"] == mc for l in links):
-                extra += [i for i in (plan_map.get(mc) or {}).get("rows", [])
-                          if isinstance(i, int) and i not in loaded]
-        if not extra:
-            break
-        before = len(passages)
-        pool.load_selected(rows, extra[:12], loaded, passages)
-        if len(passages) == before:
-            break
-        await link_round()
-        gap_log += await gap_fill(client, pool, codes, plan_map, rows, loaded,
-                                  passages, links, seen, semaphore)
-
-    return {"group": g["gid"], "links": links, "refs": g["refs"],
-            "gap_fill": gap_log,
-            "requirements": {c: p.get("requirements", [])
-                             for c, p in plan_map.items()},
-            "coverage_incomplete": failing,
-            "loaded_rows": sorted(loaded), "passages": len(passages)}
-
 
 def load_done(path: Path) -> set:
     done = set()
@@ -694,10 +695,15 @@ def load_done(path: Path) -> set:
 async def run(args) -> int:
     from openai import AsyncOpenAI
     acs_dir = Path(args.data) / "acs"
-    pool = CandidatePool(args.data)
+    pool = CandidatePool(args.data, summaries_file=args.summaries)
     groups = build_groups(acs_dir)
     if args.pdf:
         groups = [g for g in groups if args.pdf in g["pdf"]]
+    # the ACSs the dataset cares about most run first
+    prio = re.compile(r"private|instrument|commercial|airline|flight_instructor|"
+                      r"cfi|cfii|helicopter|mechanic|airframe|powerplant", re.I)
+    groups.sort(key=lambda g: (0 if prio.search(g["pdf"] or "") else 1,
+                               g["pdf"], g["task_code"]))
     if args.limit:
         groups = groups[: args.limit]
     out_path = Path(args.out)
@@ -783,6 +789,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--data", type=Path, default=Path("data"))
     p.add_argument("--out", type=Path, default=Path("work/acs_links_llm.jsonl"))
+    p.add_argument("--summaries", type=Path, default=Path("work/summaries.jsonl"),
+                   help="summary-tree file for TOC catalog hints")
     p.add_argument("--pdf", default=None, help="only ACS PDFs containing this text")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--concurrency", type=int, default=4)
