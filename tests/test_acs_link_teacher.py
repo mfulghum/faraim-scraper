@@ -181,6 +181,22 @@ def test_merge_folds_teacher_links(tmp_path):
     assert "IH.I.A.K1" in entry["acs_keys"]
 
 
+def test_build_groups_document_prior_refs(tmp_path):
+    acs = tmp_path / "acs"
+    acs.mkdir()
+    (acs / "acs_tasks.jsonl").write_text("\n".join(json.dumps(t) for t in [
+        {"code": "PA.I.A", "area": "I", "task": "A", "objective": "o1",
+         "pdf": "x.pdf", "refs": ["14 CFR part 61", "FAA-H-8083-25"]},
+        {"code": "PA.I.B", "area": "I", "task": "B", "objective": "o2",
+         "pdf": "x.pdf", "refs": []},
+    ]), encoding="utf-8")
+    (acs / "acs_elements.jsonl").write_text("", encoding="utf-8")
+    by_code = {g["task_code"]: g for g in build_groups(acs)}
+    assert by_code["PA.I.B"]["refs"] == ["14 CFR part 61", "FAA-H-8083-25"]
+    assert by_code["PA.I.B"]["refs_source"] == "document"
+    assert "refs_source" not in by_code["PA.I.A"]
+
+
 def test_build_groups(tmp_path):
     acs = tmp_path / "acs"
     acs.mkdir()

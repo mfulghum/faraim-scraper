@@ -450,6 +450,18 @@ def build_groups(acs_dir: Path) -> List[dict]:
                 "gid": f"{pdf}|{code}", "pdf": pdf, "task_code": code,
                 "objective": t.get("objective", ""), "elements": [],
                 "refs": t.get("refs", []), "doc_title": ""}
+    # tasks whose References line the parser never captured inherit the
+    # union of References cited by their siblings in the same ACS document
+    doc_refs: Dict[str, List[str]] = {}
+    for t in tasks.values():
+        dr = doc_refs.setdefault(t["pdf"], [])
+        for r in t.get("refs", []):
+            if r not in dr:
+                dr.append(r)
+    for g in groups.values():
+        if not g["refs"] and doc_refs.get(g["pdf"]):
+            g["refs"] = list(doc_refs[g["pdf"]])
+            g["refs_source"] = "document"
     return list(groups.values())
 
 
@@ -612,6 +624,7 @@ async def link_group(client, pool: CandidatePool, g: dict,
                                   passages, links, seen, semaphore)
 
     return {"group": g["gid"], "links": links, "refs": g["refs"],
+            "refs_source": g.get("refs_source"),
             "gap_fill": gap_log,
             "requirements": {c: p.get("requirements", [])
                              for c, p in plan_map.items()},
