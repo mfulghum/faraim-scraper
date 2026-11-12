@@ -31,6 +31,39 @@ def _fixture(tmp_path):
     return llm, acs_dir
 
 
+from pathlib import Path
+
+import pytest
+
+from faraim_scraper.eval_gold import score_acs_gold
+from faraim_scraper.citations import SectionIndex
+
+
+@pytest.fixture
+def index(tmp_path):
+    rec = {"doc": "far", "section_id": "61.57", "title": "§ 61.57 Recent flight "
+           "experience: Pilot in command.", "url": "u",
+           "txt_path": "far/61.57.txt"}
+    (tmp_path / "manifest.jsonl").write_text(json.dumps(rec) + "\n",
+                                             encoding="utf-8")
+    (tmp_path / "far").mkdir()
+    (tmp_path / "far" / "61.57.txt").write_text("recent experience text",
+                                                encoding="utf-8")
+    return SectionIndex(tmp_path)
+
+
+def test_score_acs_gold(index):
+    item = {"code": "IH.I.A.K1", "acs_text": "recency of experience",
+            "gold_sections": [{"section_id": "61.57", "type": "far",
+                               "quote": "q", "evidence": "llm full-text"},
+                              {"section_id": "61.51", "type": "far",
+                               "quote": "q2", "evidence": "llm full-text"}]}
+    hit, cov = score_acs_gold(item, "Per 14 CFR § 61.57 you need...", index)
+    assert hit and abs(cov - 0.5) < 1e-9
+    hit, cov = score_acs_gold(item, "no citations here", index)
+    assert not hit and cov == 0.0
+
+
 def test_build_acs_gold(tmp_path):
     llm, acs_dir = _fixture(tmp_path)
     rows = build_acs_gold(llm, acs_dir)
