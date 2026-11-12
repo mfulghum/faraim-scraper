@@ -62,7 +62,10 @@ def _block_title(body: str) -> str:
     if m:
         return line[:m.end()].strip()
     m = re.match(r"^\(\w{1,2}\)\s+(.+)", line)
-    head = m.group(1) if m else line
+    if m:
+        head = line[:m.start(1)] + m.group(1)
+    else:
+        head = line
     if len(head) > 100:
         head = head[:100].rsplit(" ", 1)[0] + "…"
     return head.strip()
