@@ -175,9 +175,32 @@ def build_acs_records(acs_dir: Path) -> List[dict]:
     return out
 
 
+def build_handbook_records(data_dir: Path) -> List[dict]:
+    """Handbook chunks (PHAK, AFH, AMT, weather...) as corpus-style records."""
+    path = Path(data_dir) / "handbooks" / "handbook_chunks.jsonl"
+    out: List[dict] = []
+    if not path.is_file():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines():
+        c = json.loads(line)
+        out.append({
+            "id": c["id"], "split": "train", "kind": "handbook",
+            "handbook": c["handbook"], "handbook_title": c["handbook_title"],
+            "chapter": c["chapter"], "chapter_title": c.get("chapter_title"),
+            "pages": c.get("pages"), "text": c["text"],
+            "n_tokens": c.get("n_tokens"), "pdf": c.get("pdf"),
+        })
+    return out
+
+
 def build_retrieval_records(recs: List[dict], chunks: List[Chunk],
-                            chunk_by_id: Dict[str, Chunk]) -> dict:
-    """BEIR-style queries/corpus/qrels with BM25 hard negatives."""
+                            chunk_by_id: Dict[str, Chunk],
+                            handbook_records: Optional[List[dict]] = None) -> dict:
+    """BEIR-style queries/corpus/qrels with BM25 hard negatives.
+
+    The corpus is extended with handbook chunks so the retriever learns to
+    surface the FAA-H-8083-x material the ACS points to.
+    """
     from rank_bm25 import BM25Okapi
 
     corpus = {c.id: c for c in chunks if c.split == "train"}
@@ -205,11 +228,16 @@ def build_retrieval_records(recs: List[dict], chunks: List[Chunk],
         qrels.append({"query_id": qid,
                       "positive_ids": sorted(positives),
                       "negative_ids": negatives})
+    corpus_rows = [{"_id": i, "text": corpus[i].text,
+                    "section_id": corpus[i].section_id,
+                    "title": corpus[i].title} for i in ids]
+    for hb in (handbook_records or []):
+        corpus_rows.append({"_id": hb["id"], "text": hb["text"],
+                            "section_id": hb["id"],
+                            "title": f"{hb['handbook_title']} — {hb.get('chapter_title') or ''}"})
     return {
         "queries": queries,
-        "corpus": [{"_id": i, "text": corpus[i].text,
-                    "section_id": corpus[i].section_id,
-                    "title": corpus[i].title} for i in ids],
+        "corpus": corpus_rows,
         "qrels": qrels,
     }
 
@@ -295,7 +323,11 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     if acs_records:
         summary["acs"] = write_parquet_split(acs_records, out_dir, "acs")
 
-    retrieval = build_retrieval_records(recs, chunks, chunk_by_id)
+    handbook_records = build_handbook_records(data_dir)
+    if handbook_records:
+        summary["handbooks"] = write_parquet_split(handbook_records, out_dir, "handbooks")
+
+    retrieval = build_retrieval_records(recs, chunks, chunk_by_id, handbook_records)
     write_jsonl(out_dir / "retrieval" / "queries.jsonl", retrieval["queries"])
     write_jsonl(out_dir / "retrieval" / "corpus.jsonl", retrieval["corpus"])
     write_jsonl(out_dir / "retrieval" / "qrels.jsonl", retrieval["qrels"])
@@ -313,7 +345,7 @@ def emit(data_dir: Path, qa_path: Path, out_dir: Path) -> dict:
     write_json(out_dir / "provenance.json", {
         "scrape": scrape_info,
         "dataset": {"generated_configs": ["corpus", "sft", "sft_closed_book",
-                                          "acs", "retrieval", "eval"]},
+                                          "acs", "handbooks", "retrieval", "eval"]},
     })
     return summary
 

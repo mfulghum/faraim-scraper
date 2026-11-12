@@ -105,6 +105,18 @@ Outputs in `data/acs/`:
   including CFR-part boosts)
 - `acs_keys_by_section.jsonl` — reverse index: FAR/AIM section → relevant ACS codes
 
+## FAA handbooks (PHAK, AFH, AMT, weather…)
+
+```bash
+python -m faraim_scraper.handbooks    # download + parse -> data/handbooks/
+```
+
+Scrapes the faa.gov aviation handbooks catalog (index + subpages), keeps one
+edition per handbook (full volumes preferred over chapter/front-matter splits),
+and chunks each book by chapter with page provenance → `handbook_chunks.jsonl`.
+~60 books / ~5,500 chunks, including every FAA-H-8083-x the ACSs reference.
+The ACS crosswalk resolves handbook References to specific handbook chunks.
+
 ## Tests
 
 ```bash

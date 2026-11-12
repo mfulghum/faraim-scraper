@@ -74,6 +74,21 @@ class AcsLinker:
                     continue
                 self.semantic_docs.append(rec)
                 corpus_texts.append(((rec.get("title") or "") + " " + text).lower())
+            # handbook chunks extend the semantic pool (FAA-H-8083-x refs)
+            hb_path = self.data_dir / "handbooks" / "handbook_chunks.jsonl"
+            if hb_path.is_file():
+                for line in hb_path.read_text(encoding="utf-8").splitlines():
+                    c = json.loads(line)
+                    self.semantic_docs.append({
+                        "doc": "handbook", "section_id": c["id"],
+                        "title": f"{c['handbook_title']} — {c.get('chapter_title') or ''}",
+                        "html_path": f"handbooks/{c['id']}.html",
+                        "url": f"https://www.faa.gov/regulations_policies/handbooks_manuals/aviation/",
+                        "handbook": c["handbook"],
+                    })
+                    corpus_texts.append(
+                        (c["handbook"] + " " + c["handbook_title"] + " " +
+                         (c.get("chapter_title") or "") + " " + c["text"]).lower())
             self._tfidf = TfidfVectorizer(token_pattern=r"[a-z0-9§¶\-]+",
                                           sublinear_tf=True, min_df=2, max_df=0.7)
             try:
@@ -123,6 +138,20 @@ class AcsLinker:
                 add(rec, f"AIM {para}", 3)
         for rec, score in self.semantic_hits(text, topk=self._topk):
             add(rec, f"semantic (cosine={score:.2f})", 2)
+        # Referenced handbooks (FAA-H-8083-x) from ACS References lines.
+        cited_hbks = {h.upper() for h in re.findall(r"FAA-H-8083-\d+\w*", blob, re.I)}
+        for code in sorted(cited_hbks):
+            add({"doc": "handbook", "section_id": code, "title": None,
+                 "html_path": f"handbooks/{code}", "url": ""},
+                f"references {code}", 3)
+            # prefer semantic hits inside a referenced handbook
+            deep = self.semantic_hits(text, topk=30)
+            in_hbk = [(r, s) for r, s in deep
+                      if r.get("doc") == "handbook"
+                      and r.get("handbook", "").upper().startswith(code)]
+            if in_hbk:
+                rec, score = in_hbk[0]
+                add(rec, f"handbook-ref semantic (cosine={score:.2f})", 3)
         # Part boost: when the ACS text names a CFR part, prefer the best hit
         # inside that part even if it loses to generic lexically-similar text.
         detected = set(parsed["parts"])

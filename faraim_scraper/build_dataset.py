@@ -34,6 +34,7 @@ cited sections must exist, quotes must match the source text verbatim
 | `sft` | parquet (train/val/test) | {sft} | conversational SFT/LoRA (context-grounded) |
 | `sft_closed_book` | parquet | {closed} | memorization-style SFT incl. abstention pairs |
 | `acs` | parquet | see acs/ | ACS elements/tasks keyed by test code (e.g. `PA.II.A.K4`) |
+| `handbooks` | parquet | see handbooks/ | FAA-H-8083-x handbook chunks (PHAK, AFH, HFH, AMT, weather…) with chapter/page provenance |
 | `retrieval` | jsonl (queries/corpus/qrels) | {retrieval} | bi-encoder fine-tuning (BEIR-style, BM25 hard negatives) |
 | `eval` | jsonl | {gold} | gold eval set (human-reviewable, citation-scored) |
 
@@ -54,6 +55,11 @@ regulations the model never trains on: **14 CFR Parts 105 and 107, AIM Chapter
 - Scrape: faraim.org, {scraped_at} (source: `provenance.json`)
 - AIM source document: {aim_source}
 - FAR coverage: pilot index (84 ASA-style parts of 14/49 CFR)
+- ACS coverage: 24 FAA Airman Certification Standards (faa.gov), element-level
+  codes; ACS <-> FAR/AIM/handbook links carry machine-checked evidence
+- Handbook corpus: 60+ FAA aviation handbooks (PHAK FAA-H-8083-25, AFH, HFH,
+  IPH, IFH, AMT trio, Aviation Weather Handbook...), deduplicated to one
+  edition per handbook with chapter/page provenance
 - QA synthesis: `{teacher}` (local vLLM-compatible server), guided JSON decoding,
   4 pair types per chunk: factual, pilot-phrased, cross-reference, abstention
 - Filter statistics: `{filter_stats}`
