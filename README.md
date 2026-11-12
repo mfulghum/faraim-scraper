@@ -82,6 +82,29 @@ it's the site's own clean text extraction). `sha256` lets you detect content
 changes between scrapes, and `scrape_info.json` gives you citation metadata
 for the dataset card (the AIM index page records the source PDF name/date).
 
+## ACS documents (faa.gov)
+
+The FAA Airman Certification Standards are PDFs, not HTML — a dedicated module
+scrapes and structures them, so training data can be tied to ACS test keys
+(e.g. `PA.II.A.K4`):
+
+```bash
+python -m faraim_scraper.acs          # download + parse all ACS PDFs -> data/acs/
+python -m faraim_scraper.acs_links    # crosswalk ACS codes <-> FAR/AIM sections
+```
+
+Outputs in `data/acs/`:
+
+- `pdf/` — all ACS PDFs (faa.gov requires a browser User-Agent)
+- `acs_elements.jsonl` — every Knowledge/Risk/Skill element with its official
+  code, area/task titles, doc id (FAA-S-ACS-x), and text
+- `acs_tasks.jsonl` — task objectives + Reference lines (14 CFR parts, ACs,
+  FAA-H-8083-x handbooks, POH/AFM)
+- `acs_links.jsonl` — for each ACS code, linked FAR/AIM sections with match
+  evidence and strength (`3` = explicit citation, `2` = TF-IDF semantic,
+  including CFR-part boosts)
+- `acs_keys_by_section.jsonl` — reverse index: FAR/AIM section → relevant ACS codes
+
 ## Tests
 
 ```bash
