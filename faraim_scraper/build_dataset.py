@@ -57,7 +57,12 @@ regulations the model never trains on: **14 CFR Parts 105 and 107, AIM Chapter
 - AIM source document: {aim_source}
 - FAR coverage: pilot index (84 ASA-style parts of 14/49 CFR)
 - ACS coverage: 24 FAA Airman Certification Standards (faa.gov), element-level
-  codes; ACS <-> FAR/AIM/handbook links carry machine-checked evidence
+  codes; ACS <-> FAR/AIM/handbook links are built by a reader model that works
+  general -> specific: it writes the expected answer key from the TOC of the
+  documents named in each task's References, loads only those passages, and
+  emits per-code links with verbatim-quoted, machine-checked evidence
+  (`llm full-text`, `llm gap-fill`); requirements that name a section
+  (e.g. `14 CFR 91.205(c)`) are enforced deterministically
 - Handbook corpus: 60+ FAA aviation handbooks (PHAK FAA-H-8083-25, AFH, HFH,
   IPH, IFH, AMT trio, Aviation Weather Handbook...), deduplicated to one
   edition per handbook with chapter/page provenance
