@@ -473,23 +473,39 @@ def query_block(g: dict) -> str:
     return "\n".join(lines)
 
 
+CALL_TIMEOUT = float(os.environ.get("FARAIM_CALL_TIMEOUT", "900"))
+GROUP_BUDGET = float(os.environ.get("FARAIM_GROUP_BUDGET", "2700"))
+
+
 async def _call(client, prompt: str, response_format, semaphore,
-                max_tokens: int = 8192, effort: str = "medium") -> Optional[dict]:
+                max_tokens: int = 8192, effort: str = "medium",
+                timeout: Optional[float] = None) -> Optional[dict]:
+    """One guided call; hard wall-clock timeout because a saturated server
+    can hold the connection open forever (read timeouts get reset by
+    trickling reasoning tokens). One retry, then None."""
+    import asyncio
     from openai import APIError
-    async with semaphore:
+    timeout = timeout or CALL_TIMEOUT
+    last = None
+    for _try in range(2):
+        async with semaphore:
+            try:
+                resp = await asyncio.wait_for(
+                    client.chat.completions.create(
+                        model=TEACHER_MODEL,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.2, max_tokens=max_tokens,
+                        response_format=response_format,
+                        extra_body={"reasoning_effort": effort}),
+                    timeout=timeout)
+            except (APIError, asyncio.TimeoutError) as exc:
+                last = exc
+                continue
         try:
-            resp = await client.chat.completions.create(
-                model=TEACHER_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.2, max_tokens=max_tokens,
-                response_format=response_format,
-                extra_body={"reasoning_effort": effort})
-        except APIError:
+            return json.loads(resp.choices[0].message.content)
+        except (json.JSONDecodeError, TypeError):
             return None
-    try:
-        return json.loads(resp.choices[0].message.content)
-    except (json.JSONDecodeError, TypeError):
-        return None
+    return None
 
 
 def verify_prompt(codes: List[str], plan_map: Dict[str, dict],
@@ -531,9 +547,15 @@ def _toc_lines(rows: List[dict], loaded: set) -> List[str]:
 
 async def link_group(client, pool: CandidatePool, g: dict,
                      semaphore, max_rounds: int = 3,
-                     max_verify_rounds: int = 2) -> dict:
+                     max_verify_rounds: int = 2,
+                     budget: Optional[float] = None) -> dict:
     """Answer-key driven, general to specific:
     plan (TOC) -> load -> link (verbatim quotes) -> verify coverage -> more."""
+    import time
+    budget = budget if budget is not None else GROUP_BUDGET
+    started = time.monotonic()
+    def over() -> bool:
+        return time.monotonic() - started > budget
     scope = parse_scope(g["refs"])
     rows = pool.rows(scope)
     if not rows:
@@ -543,6 +565,8 @@ async def link_group(client, pool: CandidatePool, g: dict,
 
     plan_map: Dict[str, dict] = {}
     for _plan_try in range(3):
+        if over():
+            break
         plan = await _call(client, plan_prompt(rows, query_block(g),
                                                g["doc_title"]),
                            PLAN_FORMAT, semaphore, max_tokens=24576)
@@ -585,18 +609,22 @@ async def link_group(client, pool: CandidatePool, g: dict,
         res = await link_round()
         more = [i for i in res.get("load_more", [])
                 if isinstance(i, int) and i not in loaded]
-        if not more:
+        if not more or over():
             break
         before = len(passages)
         pool.load_selected(rows, more, loaded, passages)
         if len(passages) == before:
             break
 
-    gap_log = await gap_fill(client, pool, codes, plan_map, rows, loaded,
-                             passages, links, seen, semaphore)
+    gap_log = ([] if over() else
+               await gap_fill(client, pool, codes, plan_map, rows, loaded,
+                              passages, links, seen, semaphore))
 
     failing = False
     for _ in range(max_verify_rounds):
+        if over():
+            failing = True
+            break
         ver = await _call(client, verify_prompt(codes, plan_map, links,
                                                 _toc_lines(rows, loaded)),
                           VERIFY_FORMAT, semaphore, max_tokens=12288)
@@ -623,13 +651,16 @@ async def link_group(client, pool: CandidatePool, g: dict,
         gap_log += await gap_fill(client, pool, codes, plan_map, rows, loaded,
                                   passages, links, seen, semaphore)
 
-    return {"group": g["gid"], "links": links, "refs": g["refs"],
-            "refs_source": g.get("refs_source"),
-            "gap_fill": gap_log,
-            "requirements": {c: p.get("requirements", [])
-                             for c, p in plan_map.items()},
-            "coverage_incomplete": failing,
-            "loaded_rows": sorted(loaded), "passages": len(passages)}
+    rec = {"group": g["gid"], "links": links, "refs": g["refs"],
+           "refs_source": g.get("refs_source"),
+           "gap_fill": gap_log,
+           "requirements": {c: p.get("requirements", [])
+                            for c, p in plan_map.items()},
+           "coverage_incomplete": failing,
+           "loaded_rows": sorted(loaded), "passages": len(passages)}
+    if over():
+        rec["note"] = "budget"        # not terminal: re-run on resume
+    return rec
 
 
 def named_paragraph(text: str, req: str, sid: str) -> Optional[str]:
@@ -731,13 +762,18 @@ async def gap_fill(client, pool: CandidatePool, codes: List[str],
 
 
 def load_done(path: Path) -> set:
+    """Groups considered terminal. 'budget' (and missing) records are redone;
+    legitimate empties ('no-scoped-docs', 'selection-unloadable') are kept."""
     done = set()
     if path.is_file():
         for l in path.read_text(encoding="utf-8").splitlines():
             try:
-                done.add(json.loads(l)["group"])
+                r = json.loads(l)
             except (json.JSONDecodeError, KeyError):
                 continue
+            if r.get("note") == "budget":
+                continue
+            done.add(r["group"])
     return done
 
 
