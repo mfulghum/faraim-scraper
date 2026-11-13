@@ -35,6 +35,18 @@ def test_block_title_prefers_heading_sentence():
     assert t.endswith("…") and not t[-2:-1] == " "
 
 
+def test_block_title_never_mixes_levels():
+    from faraim_scraper.tree_summaries import _block_title
+    body = ("(b) The Rotorcraft Flight Manual must contain—  (1) In its "
+            "performance information section any information necessary for "
+            "compliance with § 27.1585.  (2) The horizontal takeoff distance.")
+    assert _block_title(body) == "(b) The Rotorcraft Flight Manual must contain—"
+    colon_body = ("(a) This approval is granted subject to the following "
+                  "limitations:  (1) Operation in icing is prohibited.")
+    assert _block_title(colon_body) == \
+        "(a) This approval is granted subject to the following limitations:"
+
+
 def make_data(tmp_path):
     recs = [
         {"doc": "far", "section_id": "91.205", "part": "91",

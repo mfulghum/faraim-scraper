@@ -55,17 +55,27 @@ SUMMARY_FORMAT = {
 
 
 def _block_title(body: str) -> str:
-    """'(b) Orange panels. Display of...' -> '(b) Orange panels.'; fall back
-    to the first clause, cut at a word boundary -- never mid-word."""
+    """'(b) Orange panels. Display of...' -> '(b) Orange panels.'.
+    Never mixes hierarchy levels: if the (b) block runs into its own (1)/(i)
+    paragraphs, stop before them ('(b) The RFM must contain—' stays, the
+    '(1) In its performance...' part is cut)."""
     line = " ".join(body.splitlines()).strip()
+    # cut before a nested paragraph marker ( (1) / (i) / (A) ) that starts a
+    # new block: preceded by wide space, an en/em-dash, or a colon. Inline
+    # cites like § 172.332(c)(4) lack that delimiter, so they don't cut.
+    m2 = re.search(r"((?:\s{2,}|—|–|:)\s*)\((?:\d{1,2}|[ivxl]{1,4}|[A-Za-z])\)\s",
+                   line)
+    if m2:
+        head = line[:m2.start()].strip()
+        if m2.group(1).strip() in ("—", "–", ":"):
+            head += m2.group(1).strip()
+        if len(head) >= 12:
+            line = head
     m = re.match(r"^\(\w{1,2}\)\s+(.{2,80}?\.)\s", line)
     if m:
         return line[:m.end()].strip()
-    m = re.match(r"^\(\w{1,2}\)\s+(.+)", line)
-    if m:
-        head = line[:m.start(1)] + m.group(1)
-    else:
-        head = line
+    m3 = re.match(r"^\(\w{1,2}\)\s+(.+)", line)
+    head = line[:m3.start(1)] + m3.group(1) if m3 else line
     if len(head) > 100:
         head = head[:100].rsplit(" ", 1)[0] + "…"
     return head.strip()
