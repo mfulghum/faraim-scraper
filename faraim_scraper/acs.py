@@ -26,11 +26,14 @@ PDF_HREF_RE = re.compile(r'href="([^"]*training_testing/testing/acs/[^"]+\.pdf)"
 # e.g. PA.I.B.K1a  (category . area . task . type+num [. subletter])
 CODE_RE = re.compile(r"^([A-Z]{2,4})\.([IVX]+)\.([A-Z])\.([KRS])(\d+)([a-z])?$")
 AREA_RE = re.compile(r"^Area of Operation\s+([IVX]+)\.?\s+(.*)")
-TASK_RE = re.compile(r"^Task\s+([A-Z])\.\s+(.*)")
+TASK_RE = re.compile(r"^(?:Task|Subject)\s+([A-Z])\.\s+(.*)")
+# Mechanic ACS (FAA-S-ACS-1) writes "I. General" where pilot ACSs write
+# "Area of Operation I. ..."; only used when the pilot style never matched.
+MECH_AREA_RE = re.compile(r"^([IVX]+)\.\s+(\S.*)")
 DOC_ID_RE = re.compile(r"FAA-S-ACS-\d+\w*")
 # Reference fragments inside a task block.
 REF_PATTERNS = [
-    re.compile(r"14 CFR parts?\s+([\d,\s]+?)(?:;|$)"),
+    re.compile(r"14 CFR parts?\s+([\d,\s]+?)(?:;|\.(?=\s|$)|$)"),
     re.compile(r"14 CFR\s+§\s*([\d.]+)"),
     re.compile(r"\bAC\s+(\d+-\d+\w?)\b"),
     re.compile(r"\bFAA-H-8083-(\d+)\b"),
@@ -143,13 +146,41 @@ def parse_acs(pdf_path: Path) -> Dict:
     pending: Optional[Dict] = None  # element awaiting continuation lines
     category = None
 
-    for pno in range(len(doc)):
-        for line in _clean_lines(doc[pno].get_text()):
+    all_lines = [line for pno in range(len(doc))
+                 for line in _clean_lines(doc[pno].get_text())]
+    # Some ACS layouts split headings across two lines ("Task" / "A. Title",
+    # "I." / "Area title"); rejoin them so the heading regexes see one line.
+    merged: List[str] = []
+    i = 0
+    while i < len(all_lines):
+        s = all_lines[i]
+        nxt = all_lines[i + 1] if i + 1 < len(all_lines) else ""
+        if s in ("Task", "Task:") and re.match(r"^[A-Z]\. \S", nxt):
+            merged.append("Task " + nxt)
+            i += 2
+            continue
+        if re.fullmatch(r"[IVX]+\.", s) and re.match(r"^[A-Z][a-zA-Z]", nxt):
+            merged.append(s + " " + nxt)
+            i += 2
+            continue
+        merged.append(s)
+        i += 1
+    all_lines = merged
+    # Mechanic-style documents never say "Area of Operation".
+    mech_mode = not any(AREA_RE.match(l) for l in all_lines)
+
+    for line in all_lines:
             am = AREA_RE.match(line)
             if am:
                 cur_area = {"roman": am.group(1), "title": am.group(2).strip()}
                 pending = None
                 continue
+            if mech_mode:
+                mam = MECH_AREA_RE.match(line)
+                if mam:
+                    cur_area = {"roman": mam.group(1), "title": mam.group(2).strip()}
+                    pending = None
+                    continue
             tm = TASK_RE.match(line)
             if tm:
                 task_title = re.sub(r"[.\s]{4,}\d{1,3}$", "", tm.group(2).strip())
@@ -193,6 +224,19 @@ def parse_acs(pdf_path: Path) -> Dict:
                     break
                 obj.append(l)
             t["objective"] = " ".join(obj).strip()
+        else:
+            # Mechanic ACS style: an "Objective" label line followed by prose.
+            for i, l in enumerate(t["lines"]):
+                if re.match(r"^[Oo]bjective:?$", l):
+                    obj = []
+                    for l2 in t["lines"][i + 1:]:
+                        if CODE_RE.match(l2) or re.match(
+                                r"^(Knowledge|Skills|Risk)", l2):
+                            break
+                        obj.append(l2)
+                    if obj:
+                        t["objective"] = " ".join(obj).strip()
+                    break
         t["refs"] = _extract_refs(t["lines"])
 
     for e in elements:
