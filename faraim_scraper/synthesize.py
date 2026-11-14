@@ -22,6 +22,30 @@ TEACHER_MODEL = os.environ.get("FARAIM_TEACHER_MODEL", "Qwen3.8-Flash-Next")
 
 PAIR_TYPES = ("factual", "pilot", "crossref", "abstention")
 
+# Answers must never leak raw manifest/chunk identifiers.
+RAW_ID_IN_ANSWER_RE = re.compile(
+    r"hbk:|section-\d|chapter-\d|appendix-\d+-\d+|#\d+\b")
+
+# Index/TOC/table pages: nothing to ground questions in.
+_DOT_LEADER_RE = re.compile(r"\.{6,}|…{3,}")
+
+
+def is_index_like(text: str) -> bool:
+    """True for chunks that are tables of contents, page-label indexes, or
+    citation listings (e.g. a handbook chapter that is only dot-leader lines
+    mapping '14 CFR part 1' to page numbers)."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return True
+    leaders = sum(1 for l in lines if _DOT_LEADER_RE.search(l))
+    if leaders / len(lines) > 0.25:
+        return True
+    alpha = sum(c.isalpha() for c in text)
+    if alpha / max(1, len(text)) < 0.5:
+        return True
+    from .dataset import count_tokens
+    return count_tokens(text) < 40
+
 SYSTEM_PROMPT = (
     "You are generating aviation training data from provided excerpts of 14/49 CFR "
     "(FAR), the FAA Aeronautical Information Manual (AIM), and FAA aviation "
@@ -57,14 +81,15 @@ TYPE_INSTRUCTIONS = {
         "citation for EACH section cited."
     ),
     "abstention": (
-        "Write ONE question about a topic related to the PRIMARY excerpt that the "
-        "PRIMARY excerpt does NOT answer. Pick a sibling section from the SIBLING "
-        "SECTIONS list that does cover it. The answer must: (a) state that the "
-        "primary section's canonical citation does not address the question, (b) "
-        "quote one short verbatim line from the PRIMARY excerpt showing its actual "
-        "scope, and (c) point the reader to the sibling section by id and title. "
-        "Include the primary section id in 'citations' with its quote, and put the "
-        "sibling section id in BOTH 'citations' and 'unquoted_citations'."
+        "Write ONE question about a topic in the same general subject area that a "
+        "reader might expect the PRIMARY excerpt to cover, but which it does NOT "
+        "answer. The answer must: (a) state that the primary section's canonical "
+        "citation does not address the question, and (b) quote one short verbatim "
+        "line from the PRIMARY excerpt showing what it actually covers. Do NOT "
+        "point the reader to any other section, handbook, id or document name -- "
+        "simply and honestly say the provided text does not cover it. 'citations' "
+        "contains only the primary section id; 'quotes' its supporting line; "
+        "'unquoted_citations' is empty."
     ),
 }
 
@@ -137,22 +162,6 @@ def extract_cross_refs(chunk: Chunk, index: SectionIndex) -> List[str]:
     return refs[:2]
 
 
-def sibling_ids(chunk: Chunk, index: SectionIndex, limit: int = 12) -> List[str]:
-    """Other sections in the same part/chapter, for abstention prompts."""
-    out = []
-    for rec in index.by_id.values():
-        if rec["doc"] != chunk.doc or rec["section_id"] == chunk.section_id:
-            continue
-        if chunk.doc == "far" and rec.get("part") != chunk.part:
-            continue
-        if chunk.doc == "aim" and rec.get("chapter") != chunk.chapter:
-            continue
-        out.append(f"{rec['section_id']}: {rec.get('title') or ''}")
-        if len(out) >= limit:
-            break
-    return out
-
-
 def build_user_prompt(chunk: Chunk, pair_type: str, index: SectionIndex,
                       related: List[str]) -> str:
     parts = [f"PRIMARY SECTION id: {chunk.section_id}",
@@ -164,9 +173,6 @@ def build_user_prompt(chunk: Chunk, pair_type: str, index: SectionIndex,
             parts += [f"RELATED SECTION id: {sid}",
                       f"CANONICAL CITATION: {canonical_citation(rec)}",
                       "RELATED EXCERPT:", index.text(rec), ""]
-    if pair_type == "abstention":
-        parts += ["SIBLING SECTIONS (same part/chapter):",
-                  "\n".join("- " + s for s in sibling_ids(chunk, index)), ""]
     parts.append(TYPE_INSTRUCTIONS[pair_type])
     return "\n".join(parts)
 
@@ -203,6 +209,11 @@ async def generate_pair(client, chunk: Chunk, pair_type: str, index: SectionInde
             pair = None
         if pair is not None:
             problems = index.validate_pair(pair)
+            if not problems and RAW_ID_IN_ANSWER_RE.search(
+                    pair.get("answer", "")):
+                problems = ["answer exposes raw internal section ids "
+                            "(e.g. 'hbk:...', 'section-4-3-24'); name topics or "
+                            "canonical citations only, or omit the pointer"]
             if not problems:
                 return {"chunk_id": chunk.id, "type": pair_type,
                         "pair": pair, "problems": [], "attempts": attempt}
@@ -238,6 +249,11 @@ async def run(args) -> int:
         chunks += hb
     if args.only:
         chunks = [c for c in chunks if args.only in c.id]
+    kept = [c for c in chunks if not is_index_like(c.text)]
+    if len(kept) != len(chunks):
+        print(f"skipped {len(chunks) - len(kept)} index/table chunks "
+              f"(nothing substantive to ground on)")
+    chunks = kept
     if args.limit:
         chunks = chunks[: args.limit]
     out_path = Path(args.out)

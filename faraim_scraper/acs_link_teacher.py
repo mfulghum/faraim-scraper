@@ -25,6 +25,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -480,31 +481,44 @@ GROUP_BUDGET = float(os.environ.get("FARAIM_GROUP_BUDGET", "2700"))
 async def _call(client, prompt: str, response_format, semaphore,
                 max_tokens: int = 8192, effort: str = "medium",
                 timeout: Optional[float] = None) -> Optional[dict]:
-    """One guided call; hard wall-clock timeout because a saturated server
-    can hold the connection open forever (read timeouts get reset by
-    trickling reasoning tokens). One retry, then None."""
-    import asyncio
-    from openai import APIError
+    """One guided call with a HARD wall-clock deadline. A saturated server
+    can hold a request open forever; if awaiting its cancellation also
+    hangs, we abandon the task and move on -- progress is never blocked by
+    one stuck request. One retry, then None."""
     timeout = timeout or CALL_TIMEOUT
-    last = None
+
+    async def once() -> dict:
+        resp = await client.chat.completions.create(
+            model=TEACHER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2, max_tokens=max_tokens,
+            response_format=response_format,
+            extra_body={"reasoning_effort": effort})
+        return json.loads(resp.choices[0].message.content)
+
     for _try in range(2):
+        t0 = time.monotonic()
         async with semaphore:
+            task = asyncio.get_running_loop().create_task(once())
+            done, _ = await asyncio.wait({task}, timeout=timeout)
+            if task not in done:
+                task.cancel()      # do NOT await: a stuck call may ignore cancel
+                print(f"    call #{_try + 1} abandoned after "
+                      f"{time.monotonic() - t0:.0f}s (~{count_tokens(prompt)} "
+                      f"tok prompt)", flush=True)
+                continue           # semaphore released regardless
+        if task.cancelled():
+            exc: Optional[BaseException] = asyncio.CancelledError()
+        else:
+            exc = task.exception()
+        if exc is None:
             try:
-                resp = await asyncio.wait_for(
-                    client.chat.completions.create(
-                        model=TEACHER_MODEL,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.2, max_tokens=max_tokens,
-                        response_format=response_format,
-                        extra_body={"reasoning_effort": effort}),
-                    timeout=timeout)
-            except (APIError, asyncio.TimeoutError) as exc:
-                last = exc
-                continue
-        try:
-            return json.loads(resp.choices[0].message.content)
-        except (json.JSONDecodeError, TypeError):
-            return None
+                return task.result()
+            except (json.JSONDecodeError, TypeError):
+                return None
+        print(f"    call #{_try + 1} failed after "
+              f"{time.monotonic() - t0:.0f}s ({type(exc).__name__}, "
+              f"~{count_tokens(prompt)} tok prompt)", flush=True)
     return None
 
 

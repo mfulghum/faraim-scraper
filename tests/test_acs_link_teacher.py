@@ -197,6 +197,63 @@ def test_build_groups_document_prior_refs(tmp_path):
     assert "refs_source" not in by_code["PA.I.A"]
 
 
+def test_abstention_answer_cannot_leak_raw_ids():
+    from faraim_scraper.synthesize import RAW_ID_IN_ANSWER_RE, is_index_like
+    bad = ('For an explanation consult sibling section hbk:00-80T-80:ch3#1, '
+           'titled "BASIC AERODYNAMICS".')
+    assert RAW_ID_IN_ANSWER_RE.search(bad)
+    assert not RAW_ID_IN_ANSWER_RE.search(
+        "Per 14 CFR \u00a7 91.205(c), night VFR requires position lights.")
+    assert not RAW_ID_IN_ANSWER_RE.search("See AIM \u00b6 4-3-24 on lights.")
+
+
+def test_is_index_like():
+    from faraim_scraper.synthesize import is_index_like
+    index_page = "\n".join(
+        f"14 CFR part {p}, section {p}.1.........................6-{p}"
+        for p in range(1, 30))
+    assert is_index_like(index_page)
+    prose = ("Voltage is the force that moves current through a circuit. "
+             "One volt moves one ampere against one ohm of resistance. "
+             "Ohm's law relates the three quantities in direct "
+             "proportionality for resistive loads in DC circuits here.")
+    assert not is_index_like(prose)
+    assert is_index_like("   ")
+
+
+def test_call_abandons_stuck_requests():
+    import asyncio
+    from faraim_scraper.acs_link_teacher import _call
+
+    class Stuck:
+        async def create(self, **kw):
+            await asyncio.sleep(30)
+            raise AssertionError("should never complete")
+
+    class OK:
+        async def create(self, **kw):
+            class R:
+                class Ch:
+                    message = type("M", (), {"content": '{"ok": 1}'})()
+                choices = [Ch()]
+            return R()
+
+    sem = asyncio.Semaphore(2)
+    loop = asyncio.new_event_loop()
+    t0 = __import__("time").monotonic()
+    # stuck client: both tries abandoned fast, returns None
+    res = loop.run_until_complete(_call(
+        type("C", (), {"chat": type("C2", (), {
+            "completions": Stuck()})()})(), "p", None, sem, timeout=0.2))
+    assert res is None and __import__("time").monotonic() - t0 < 5
+    # working client: returns parsed JSON
+    res = loop.run_until_complete(_call(
+        type("C", (), {"chat": type("C2", (), {
+            "completions": OK()})()})(), "p", None, sem, timeout=5))
+    assert res == {"ok": 1}
+    loop.close()
+
+
 def test_build_groups(tmp_path):
     acs = tmp_path / "acs"
     acs.mkdir()
