@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pymupdf
@@ -89,3 +90,34 @@ def test_select_pdfs_real_pdfs_dedupes(tmp_path):
     frag = _make_pdf(tmp_path / "hfh_ch03.pdf", ["cover"] * 5)
     selected = select_pdfs([full, frag])
     assert selected == [full]
+
+
+def test_curated_title():
+    from faraim_scraper.handbooks import HB_EXCLUDE, curated_title
+    # the cover-page extractor used to call 8083-21 'Flight Standards Service'
+    assert curated_title('FAA-H-8083-21') == 'Rotorcraft Flying Handbook'
+    assert curated_title('FAA-H-8083-25C') == \
+        "Pilot's Handbook of Aeronautical Knowledge"
+    assert curated_title('FAA-H-8083-19A') == \
+        'Plane Sense: General Aviation Information'
+    assert curated_title('bfh_chapter_3') == 'Balloon Flying Handbook'
+    assert curated_title('03_aih_chapter_1') == "Aviation Instructor's Handbook"
+    assert curated_title('some_unknown_doc') is None
+    assert '00-80T-80' in HB_EXCLUDE
+
+
+def test_build_handbook_chunks_skips_excluded(tmp_path):
+    from faraim_scraper.dataset import build_handbook_chunks
+    hb = tmp_path / 'handbooks'
+    hb.mkdir()
+    rec = {"id": "hbk:00-80T-80:ch1", "handbook": "00-80T-80",
+           "handbook_title": "x", "chapter": 1, "chapter_title": None,
+           "pages": "1-2", "text": "supply requisitioning junk here",
+           "n_tokens": 10}
+    good = dict(rec, id="hbk:FAA-H-8083-21:ch1", handbook="FAA-H-8083-21",
+                handbook_title="Rotorcraft Flying Handbook",
+                text="rotorcraft airfoil lift and drag fundamentals " * 4)
+    (hb / 'handbook_chunks.jsonl').write_text(
+        "\n".join(json.dumps(r) for r in (rec, good)), encoding='utf-8')
+    chunks = build_handbook_chunks(tmp_path)
+    assert [c.id for c in chunks] == ["hbk:FAA-H-8083-21:ch1"]

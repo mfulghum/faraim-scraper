@@ -149,6 +149,65 @@ def _download(session: requests.Session, url: str, pdf_dir: Path) -> Path:
     return dest
 
 
+# Curated titles for known FAA/DoD publications: the cover-page extractor
+# picks up agency lines ("Flight Standards Service") and mid-phrase cuts
+# ("Pilot's Handbook of"), but these documents are fixed publications.
+HB_TITLES = {
+    "00_afh_full": "Airplane Flying Handbook",
+    "amtg_handbook": "Aviation Maintenance Technician Handbook–General",
+    "amt_powerplant_handbook": "Aviation Maintenance Technician Handbook–Powerplant",
+    "FAA-H-8083-1": "Aircraft Weight and Balance Handbook",
+    "FAA-H-8083-5": "Weight-Shift Control Aircraft Flying Handbook",
+    "FAA-H-8083-9": "Aviation Instructor's Handbook",
+    "FAA-H-8083-9B": "Aviation Instructor's Handbook",
+    "FAA-H-8083-15B": "Instrument Flying Handbook",
+    "FAA-H-8083-16B": "Instrument Procedures Handbook",
+    "FAA-H-8083-19A": "Plane Sense: General Aviation Information",
+    "FAA-H-8083-21": "Rotorcraft Flying Handbook",
+    "FAA-H-8083-23": "Seaplane, Skiplane, and Float/Ski Equipped Helicopter "
+                     "Operations Handbook",
+    "FAA-H-8083-25C": "Pilot's Handbook of Aeronautical Knowledge",
+    "FAA-H-8083-28B": "Aviation Weather Handbook",
+    "FAA-H-8083-31B": "Aviation Maintenance Technician Handbook–Airframe",
+    "Glider-Flying-Handbook": "Glider Flying Handbook",
+    "helicopter_flying_handbook": "Helicopter Flying Handbook",
+    "powered_parachute_handbook": "Powered Parachute Flying Handbook",
+    "remote_pilot_study_guide": "Remote Pilot – Small Unmanned Aircraft "
+                                "Systems Study Guide",
+    "airship_aerodynamics": "Airship Aerodynamics (USAAC TM 1-820)",
+    "airship_pilot_manual": "K-Type Airships Pilot's Manual (USN)",
+    "mc4_technical_manual": "MC-4 Parachute Technical Manual "
+                            "(TM 10-1670-287-23&P)",
+    "powerlines_and_thunderstorms": "Powerlines and Thunderstorms: Balloon "
+                                    "Safety Tips",
+    "1.0-Practical-Risk-Management": "Risk Management Decision Path "
+                                     "(FAA Safety Team)",
+    "2.0-Local-VFR": "Practical Risk Management for Local VFR Flying",
+    "3.0-VFR-XC": "Practical Risk Management for VFR Cross-Country Flying",
+    "4.0-Night-VFR": "Practical Risk Management for Night VFR Flying",
+}
+HB_TITLE_PREFIXES = [
+    ("bfh_", "Balloon Flying Handbook"),
+    ("gfh_", "Glider Flying Handbook"),
+    ("hfh_", "Helicopter Flying Handbook"),
+    ("appendix_", "Balloon Flying Handbook"),
+]
+# Not aviation-training content (1965 NAVAIR supply-requisition manual that
+# slipped into the scrape list).
+HB_EXCLUDE = {"00-80T-80"}
+
+
+def curated_title(doc_id: str) -> Optional[str]:
+    if doc_id in HB_TITLES:
+        return HB_TITLES[doc_id]
+    for prefix, title in HB_TITLE_PREFIXES:
+        if doc_id.startswith(prefix):
+            return title
+    if "_aih_" in doc_id:
+        return "Aviation Instructor's Handbook"
+    return None
+
+
 def _book_title(doc, fallback: str) -> str:
     for p in range(min(3, len(doc))):
         for line in doc[p].get_text().splitlines():
@@ -222,7 +281,11 @@ def parse_handbook(pdf_path: Path, max_tokens: int = 1200,
 
     blob = pdf_path.name + " " + (doc[0].get_text() if len(doc) else "")
     doc_id = _page1_doc_id(pdf_path, doc)
-    title = _book_title(doc, pdf_path.stem.replace("_", " "))
+    if doc_id in HB_EXCLUDE:
+        raise RuntimeError(f"{doc_id} is on the exclusion list (not "
+                           f"aviation-training content)")
+    title = curated_title(doc_id) or _book_title(doc,
+                                                 pdf_path.stem.replace("_", " "))
 
     chunks: List[Dict] = []
     for ci, ch in enumerate(_chapters(doc)):

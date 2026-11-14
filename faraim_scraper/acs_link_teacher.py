@@ -503,10 +503,11 @@ async def _call(client, prompt: str, response_format, semaphore,
             done, _ = await asyncio.wait({task}, timeout=timeout)
             if task not in done:
                 task.cancel()      # do NOT await: a stuck call may ignore cancel
-                print(f"    call #{_try + 1} abandoned after "
+                print(f"    call abandoned after "
                       f"{time.monotonic() - t0:.0f}s (~{count_tokens(prompt)} "
                       f"tok prompt)", flush=True)
-                continue           # semaphore released regardless
+                return None        # never retry a timeout: the server keeps
+                                   # serving it; retrying queues a second copy
         if task.cancelled():
             exc: Optional[BaseException] = asyncio.CancelledError()
         else:

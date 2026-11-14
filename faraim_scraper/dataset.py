@@ -227,6 +227,12 @@ def write_corpus(chunks: List[Chunk], out_dir: Path,
     return counts
 
 
+# Publications on the scrape list that are not aviation-training content
+# (1965 NAVAIR supply-requisition manual). Kept here (not handbooks.py) so
+# dataset loading and scraping share one source of truth.
+HB_EXCLUDE = frozenset({"00-80T-80"})
+
+
 def build_handbook_chunks(data_dir: Path) -> List[Chunk]:
     """Handbook chunks as Chunk objects (QA synthesis + dataset joins)."""
     path = Path(data_dir) / "handbooks" / "handbook_chunks.jsonl"
@@ -235,6 +241,8 @@ def build_handbook_chunks(data_dir: Path) -> List[Chunk]:
     out: List[Chunk] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         c = json.loads(line)
+        if c["handbook"] in HB_EXCLUDE:
+            continue
         title = f"{c['handbook_title']} — {c.get('chapter_title') or ''}".strip(" —")
         out.append(Chunk(
             id=c["id"], text=c["text"], doc="handbook", part=c["handbook"],
