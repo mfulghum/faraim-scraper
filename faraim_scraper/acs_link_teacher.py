@@ -589,15 +589,18 @@ async def link_group(client, pool: CandidatePool, g: dict,
     codes = [c for c, _ in g["elements"]] + [f"{g['task_code']} (task)"]
 
     plan_map: Dict[str, dict] = {}
-    for _plan_try in range(3):
+    for _plan_try in range(2):     # _call retries once internally; two
+                                   # outer rounds is the honest maximum
         if over():
             break
         plan = await _call(client, plan_prompt(rows, query_block(g),
                                                g["doc_title"]),
-                           PLAN_FORMAT, semaphore, max_tokens=24576,
-                           effort="low")   # medium spent the WHOLE budget on
-                                           # reasoning tokens -> empty content
-                                           # (finish=length) with zero output
+                           PLAN_FORMAT, semaphore, max_tokens=32768,
+                           effort="low", timeout=2700)
+                           # low effort: medium spent the WHOLE budget on
+                           # reasoning tokens -> empty content (finish=length);
+                           # 32k/2700s sized for big TOCs at ~15 tok/s under
+                           # contention (measured on the live server)
         for p in (plan or {}).get("codes", []):
             code = p.get("code")
             if (code in codes and p.get("requirements")
