@@ -488,14 +488,25 @@ async def _call(client, prompt: str, response_format, semaphore,
     timeout = timeout or CALL_TIMEOUT
 
     async def once(budget: int) -> tuple:
+        extra = {"reasoning_effort": effort}
+        if effort == "none":
+            # reasoning_effort=none alone still reasoned on big guided-JSON
+            # prompts (finish=length with ~400 chars of content); the chat
+            # template flag is the one that measures reasoning_tokens=0
+            extra["chat_template_kwargs"] = {"enable_thinking": False}
         resp = await client.chat.completions.create(
             model=TEACHER_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2, max_tokens=budget,
             response_format=response_format,
-            extra_body={"reasoning_effort": effort})
+            extra_body=extra)
         ch = resp.choices[0]
-        return ch.message.content, getattr(ch, "finish_reason", "?")
+        usage = getattr(resp, "usage", None)
+        rd = getattr(usage, "completion_tokens_details", None) if usage else None
+        tokinfo = (f"completion={usage.completion_tokens} "
+                   f"reasoning={getattr(rd, 'reasoning_tokens', '?')}"
+                   if usage else "usage=?")
+        return ch.message.content, getattr(ch, "finish_reason", "?"), tokinfo
 
     for _try in range(2):
         t0 = time.monotonic()
@@ -518,13 +529,13 @@ async def _call(client, prompt: str, response_format, semaphore,
         else:
             exc = task.exception()
         if exc is None:
-            raw, fin = task.result()
+            raw, fin, tokinfo = task.result()
             try:
                 return json.loads(raw)
             except (json.JSONDecodeError, TypeError) as e:
                 print(f"    call #{_try + 1} unparseable after "
                       f"{time.monotonic() - t0:.0f}s (budget {budget}, "
-                      f"finish={fin}; {e}; content head: "
+                      f"finish={fin}, {tokinfo}; {e}; content head: "
                       f"{raw!r:1.160})", flush=True)
                 continue
         print(f"    call #{_try + 1} failed after "
