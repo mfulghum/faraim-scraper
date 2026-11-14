@@ -487,14 +487,14 @@ async def _call(client, prompt: str, response_format, semaphore,
     one stuck request. One retry, then None."""
     timeout = timeout or CALL_TIMEOUT
 
-    async def once() -> dict:
+    async def once() -> str:
         resp = await client.chat.completions.create(
             model=TEACHER_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2, max_tokens=max_tokens,
             response_format=response_format,
             extra_body={"reasoning_effort": effort})
-        return json.loads(resp.choices[0].message.content)
+        return resp.choices[0].message.content
 
     for _try in range(2):
         t0 = time.monotonic()
@@ -513,10 +513,14 @@ async def _call(client, prompt: str, response_format, semaphore,
         else:
             exc = task.exception()
         if exc is None:
+            raw = task.result()
             try:
-                return task.result()
-            except (json.JSONDecodeError, TypeError):
-                return None
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError) as e:
+                # usually empty content: reasoning tokens ate max_tokens
+                print(f"    call #{_try + 1} unparseable after "
+                      f"{time.monotonic() - t0:.0f}s ({e}; content head: "
+                      f"{raw!r:1.200})", flush=True)
         print(f"    call #{_try + 1} failed after "
               f"{time.monotonic() - t0:.0f}s ({type(exc).__name__}, "
               f"~{count_tokens(prompt)} tok prompt)", flush=True)

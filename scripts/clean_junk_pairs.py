@@ -21,7 +21,8 @@ def main(files, data="data"):
         path = Path(f)
         if not path.is_file():
             continue
-        kept, dropped_idx, dropped_id, orphans = [], 0, 0, 0
+        kept, dropped_idx, dropped_id, orphans, stale = [], 0, 0, 0, 0
+        from faraim_scraper.citations import normalize
         for l in path.read_text(encoding="utf-8").splitlines():
             try:
                 r = json.loads(l)
@@ -32,6 +33,17 @@ def main(files, data="data"):
                 # chunk gone (re-chunked book or excluded doc): its pairs
                 # cite a nonexistent source. Drop; new ids synthesize fresh.
                 orphans += 1
+                continue
+            # IDs are REUSED across re-chunks (ch1#1 is not the same text
+            # after chapter detection changes), so id-existence is not
+            # enough: every quote must appear in the CURRENT chunk text,
+            # matched with the SAME normalizer validate_pair uses.
+            pair0 = r.get("pair") or {}
+            src = normalize(text)
+            if pair0.get("quotes") and any(
+                    normalize(q.get("quote", "")) not in src
+                    for q in pair0["quotes"]):
+                stale += 1
                 continue
             if is_index_like(text):
                 dropped_idx += 1
@@ -45,7 +57,8 @@ def main(files, data="data"):
         tmp.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
         tmp.replace(path)
         print(f"{f}: kept {len(kept)}, dropped index-chunk {dropped_idx}, "
-              f"dropped raw-id {dropped_id}, dropped orphans {orphans}")
+              f"dropped raw-id {dropped_id}, dropped orphans {orphans}, "
+              f"dropped stale-quotes {stale}")
 
 
 if __name__ == "__main__":

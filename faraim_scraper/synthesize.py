@@ -244,16 +244,52 @@ def load_done(path: Path) -> set:
     return done
 
 
+def purge_stale_pairs(path: Path, texts: Dict[str, str]) -> None:
+    """Drop checkpoint records whose quotes no longer verify against the
+    CURRENT chunk text. Chunk ids are reused when a corpus is rebuilt
+    (re-chunking shifts piece numbering), so id-existence is not enough:
+    an old pair can cite a live id whose text moved to another chapter.
+    Re-uses citations.normalize -- the same match validate_pair applies."""
+    if not path.is_file():
+        return
+    from .citations import normalize
+    kept, dropped = [], 0
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        text = texts.get(rec.get("chunk_id"))
+        pair = rec.get("pair") or {}
+        if text is None:
+            if str(rec.get("chunk_id", "")).startswith("hbk:"):
+                dropped += 1          # excluded/removed doc
+                continue
+        elif pair.get("quotes") and any(
+                normalize(q.get("quote", "")) not in normalize(text)
+                for q in pair["quotes"]):
+            dropped += 1
+            continue
+        kept.append(line)
+    if dropped:
+        tmp = path.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
+        tmp.replace(path)
+        print(f"purged {dropped} stale pairs from {path.name} "
+              f"(chunk text changed under them; slots re-synthesize)")
+
+
 async def run(args) -> int:
     from openai import AsyncOpenAI
 
     index = SectionIndex(args.data)
     chunks = build_chunks(args.data)
-    if args.handbooks:
-        hb = build_handbook_chunks(args.data)
-        if not hb:
-            print("warning: --handbooks given but no handbook_chunks.jsonl found")
+    hb = build_handbook_chunks(args.data)
+    if hb:
         chunks += hb
+    purge_stale_pairs(Path(args.out), {c.id: c.text for c in chunks})
+    if not args.handbooks:
+        chunks = [c for c in chunks if not c.id.startswith("hbk:")]
     if args.only:
         chunks = [c for c in chunks if args.only in c.id]
     kept = [c for c in chunks if not is_index_like(c.text)]
