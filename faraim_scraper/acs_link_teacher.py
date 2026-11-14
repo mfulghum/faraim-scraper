@@ -595,12 +595,12 @@ async def link_group(client, pool: CandidatePool, g: dict,
             break
         plan = await _call(client, plan_prompt(rows, query_block(g),
                                                g["doc_title"]),
-                           PLAN_FORMAT, semaphore, max_tokens=32768,
-                           effort="low", timeout=2700)
-                           # low effort: medium spent the WHOLE budget on
-                           # reasoning tokens -> empty content (finish=length);
-                           # 32k/2700s sized for big TOCs at ~15 tok/s under
-                           # contention (measured on the live server)
+                           PLAN_FORMAT, semaphore, max_tokens=16384,
+                           effort="none", timeout=1500)
+                           # effort=none -> reasoning_tokens=0 (verified on the
+                           # live server); 'low'/'medium' still burned the FULL
+                           # 24-32k budget reasoning with zero content out.
+                           # Plan is structured TOC extraction: no thinking needed.
         for p in (plan or {}).get("codes", []):
             code = p.get("code")
             if (code in codes and p.get("requirements")
@@ -613,7 +613,7 @@ async def link_group(client, pool: CandidatePool, g: dict,
         sel = await _call(client, toc_prompt(rows, query_block(g),
                                              g["doc_title"]),
                           SELECTION_FORMAT, semaphore, max_tokens=8192,
-                          effort="low")
+                          effort="none")   # structured row-id picking
         to_load = list((sel or {}).get("ids", []))
 
     loaded: set = set()
