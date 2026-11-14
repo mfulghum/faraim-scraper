@@ -594,7 +594,10 @@ async def link_group(client, pool: CandidatePool, g: dict,
             break
         plan = await _call(client, plan_prompt(rows, query_block(g),
                                                g["doc_title"]),
-                           PLAN_FORMAT, semaphore, max_tokens=24576)
+                           PLAN_FORMAT, semaphore, max_tokens=24576,
+                           effort="low")   # medium spent the WHOLE budget on
+                                           # reasoning tokens -> empty content
+                                           # (finish=length) with zero output
         for p in (plan or {}).get("codes", []):
             code = p.get("code")
             if (code in codes and p.get("requirements")
