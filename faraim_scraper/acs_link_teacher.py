@@ -487,19 +487,24 @@ async def _call(client, prompt: str, response_format, semaphore,
     one stuck request. One retry, then None."""
     timeout = timeout or CALL_TIMEOUT
 
-    async def once() -> str:
+    async def once(budget: int) -> tuple:
         resp = await client.chat.completions.create(
             model=TEACHER_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2, max_tokens=max_tokens,
+            temperature=0.2, max_tokens=budget,
             response_format=response_format,
             extra_body={"reasoning_effort": effort})
-        return resp.choices[0].message.content
+        ch = resp.choices[0]
+        return ch.message.content, getattr(ch, "finish_reason", "?")
 
     for _try in range(2):
         t0 = time.monotonic()
+        # reasoning tokens count against max_tokens: an unparseable/empty
+        # response is usually 'length' truncation, so ESCALATE the budget on
+        # the retry instead of repeating the identical failure
+        budget = min(40960, max_tokens * (2 ** _try))
         async with semaphore:
-            task = asyncio.get_running_loop().create_task(once())
+            task = asyncio.get_running_loop().create_task(once(budget))
             done, _ = await asyncio.wait({task}, timeout=timeout)
             if task not in done:
                 task.cancel()      # do NOT await: a stuck call may ignore cancel
@@ -513,14 +518,15 @@ async def _call(client, prompt: str, response_format, semaphore,
         else:
             exc = task.exception()
         if exc is None:
-            raw = task.result()
+            raw, fin = task.result()
             try:
                 return json.loads(raw)
             except (json.JSONDecodeError, TypeError) as e:
-                # usually empty content: reasoning tokens ate max_tokens
                 print(f"    call #{_try + 1} unparseable after "
-                      f"{time.monotonic() - t0:.0f}s ({e}; content head: "
-                      f"{raw!r:1.200})", flush=True)
+                      f"{time.monotonic() - t0:.0f}s (budget {budget}, "
+                      f"finish={fin}; {e}; content head: "
+                      f"{raw!r:1.160})", flush=True)
+                continue
         print(f"    call #{_try + 1} failed after "
               f"{time.monotonic() - t0:.0f}s ({type(exc).__name__}, "
               f"~{count_tokens(prompt)} tok prompt)", flush=True)

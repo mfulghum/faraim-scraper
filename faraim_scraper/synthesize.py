@@ -144,6 +144,56 @@ RESPONSE_FORMAT = {
 FAR_REF_RE = re.compile(r"§\s*(\d+\.\d+)")
 AIM_REF_RE = re.compile(r"\b(?:AIM\s+|paragraph\s+)?(\d+-\d{1,2}-\d{1,3})\b")
 
+# One call per chunk producing ALL requested pair types: the chunk text is
+# prefilled once instead of once per type. Each returned pair is still
+# validated independently; failed/missing types fall back to single-type
+# calls with feedback, so batching only ever costs, never silently loses.
+BATCH_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "grounded_qa_pairs",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "pairs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string",
+                                     "enum": list(PAIR_TYPES)},
+                            "question": {"type": "string"},
+                            "answer": {"type": "string"},
+                            "quotes": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "section_id": {"type": "string"},
+                                        "quote": {"type": "string"},
+                                    },
+                                    "required": ["section_id", "quote"],
+                                    "additionalProperties": False,
+                                },
+                            },
+                            "citations": {"type": "array",
+                                          "items": {"type": "string"}},
+                            "unquoted_citations": {"type": "array",
+                                                   "items": {"type": "string"}},
+                        },
+                        "required": ["type", "question", "answer", "quotes",
+                                     "citations"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["pairs"],
+            "additionalProperties": False,
+        },
+    },
+}
+
 
 def extract_cross_refs(chunk: Chunk, index: SectionIndex) -> List[str]:
     """Section ids referenced inside a chunk's text, resolvable in the manifest."""
@@ -184,6 +234,16 @@ def build_user_prompt(chunk: Chunk, pair_type: str, index: SectionIndex,
     return "\n".join(parts)
 
 
+def _check_pair(index: SectionIndex, pair: dict) -> List[str]:
+    """Hard gates every accepted pair must pass, single or batched."""
+    problems = index.validate_pair(pair)
+    if not problems and RAW_ID_IN_ANSWER_RE.search(pair.get("answer", "")):
+        problems = ["answer exposes raw internal section ids "
+                    "(e.g. 'hbk:...', 'section-4-3-24'); name topics or "
+                    "canonical citations only, or omit the pointer"]
+    return problems
+
+
 async def generate_pair(client, chunk: Chunk, pair_type: str, index: SectionIndex,
                         related: List[str], semaphore: asyncio.Semaphore,
                         max_attempts: int = 2,
@@ -215,12 +275,7 @@ async def generate_pair(client, chunk: Chunk, pair_type: str, index: SectionInde
         except (json.JSONDecodeError, TypeError):
             pair = None
         if pair is not None:
-            problems = index.validate_pair(pair)
-            if not problems and RAW_ID_IN_ANSWER_RE.search(
-                    pair.get("answer", "")):
-                problems = ["answer exposes raw internal section ids "
-                            "(e.g. 'hbk:...', 'section-4-3-24'); name topics or "
-                            "canonical citations only, or omit the pointer"]
+            problems = _check_pair(index, pair)
             if not problems:
                 return {"chunk_id": chunk.id, "type": pair_type,
                         "pair": pair, "problems": [], "attempts": attempt}
@@ -230,6 +285,78 @@ async def generate_pair(client, chunk: Chunk, pair_type: str, index: SectionInde
                     + "\n- ".join(problems[:6]))
     return {"chunk_id": chunk.id, "type": pair_type,
             "pair": pair, "problems": problems, "attempts": max_attempts}
+
+
+def build_batch_prompt(chunk: Chunk, pair_types: List[str],
+                       index: SectionIndex, related: List[str]) -> str:
+    """One prompt: shared excerpt blocks + each requested type's instruction."""
+    parts = [f"PRIMARY SECTION id: {chunk.section_id}",
+             f"CANONICAL CITATION: {canonical_citation(index.get(chunk.section_id))}",
+             "", "PRIMARY EXCERPT:", chunk.text, ""]
+    if "crossref" in pair_types:
+        for sid in related:
+            rec = index.get(sid)
+            parts += [f"RELATED SECTION id: {sid}",
+                      f"CANONICAL CITATION: {canonical_citation(rec)}",
+                      "RELATED EXCERPT:", index.text(rec), ""]
+    parts.append(f"Produce exactly {len(pair_types)} independent question-answer "
+                 "pairs from the excerpts above, one per requested type below. "
+                 "Return them in the 'pairs' array, each tagged with its 'type'. "
+                 "Treat each pair as if generated on its own: do not refer to "
+                 "the other pairs, and derive every quote from the excerpts, not "
+                 "from the other answers.")
+    for t in pair_types:
+        parts.append(f"--- type '{t}' ---\n{TYPE_INSTRUCTIONS[t]}")
+    return "\n".join(parts)
+
+
+async def generate_pairs_batched(client, chunk: Chunk, pair_types: List[str],
+                                 index: SectionIndex, related: List[str],
+                                 semaphore: asyncio.Semaphore,
+                                 max_tokens: int = 30000) -> List[dict]:
+    """One prefill for the chunk -> up to len(pair_types) validated pairs.
+    Any type missing from the response, mislabelled, or failing validation
+    is completed via the normal single-type path (which retries with
+    feedback). Truncation/API failure on the big call costs nothing: all
+    types fall back."""
+    got: Dict[str, dict] = {}
+    prompt = build_batch_prompt(chunk, pair_types, index, related)
+    try:
+        async with semaphore:
+            resp = await client.chat.completions.create(
+                model=TEACHER_MODEL,
+                messages=[{"role": "system", "content": SYSTEM_PROMPT},
+                          {"role": "user", "content": prompt}],
+                temperature=0.8,
+                max_tokens=max_tokens,
+                response_format=BATCH_RESPONSE_FORMAT,
+                timeout=float(os.environ.get("FARAIM_BATCH_TIMEOUT", "1500")),
+                extra_body={"reasoning_effort": "medium"
+                            if {"crossref", "abstention"} & set(pair_types)
+                            else "low"},
+            )
+        data = json.loads(resp.choices[0].message.content)
+        for p in data.get("pairs", []):
+            t = p.get("type")
+            if t not in pair_types or t in got:
+                continue
+            if not _check_pair(index, p):
+                got[t] = p
+    except Exception:
+        pass                     # whole batch unusable: fall back per type
+    out = []
+    for t in pair_types:
+        if t in got:
+            out.append({"chunk_id": chunk.id, "type": t, "pair": got[t],
+                        "problems": [], "attempts": 1, "batched": True})
+        else:
+            rec = await generate_pair(client, chunk, t, index, related,
+                                      semaphore,
+                                      reasoning_effort="medium"
+                                      if t in ("crossref", "abstention")
+                                      else "low")
+            out.append(rec)
+    return out
 
 
 def load_done(path: Path) -> set:
@@ -309,28 +436,60 @@ async def run(args) -> int:
 
     client = AsyncOpenAI(base_url=TEACHER_URL, api_key="none", timeout=600)
     semaphore = asyncio.Semaphore(args.concurrency)
-    tasks = []
-    for chunk, pair_type in todo:
+
+    async def one(chunk: Chunk, pair_type: str) -> List[dict]:
         related = extract_cross_refs(chunk, index) if pair_type == "crossref" else []
-        if pair_type == "crossref" and not related:
-            continue  # no resolvable cross references in this chunk
         effort = "medium" if pair_type in ("crossref", "abstention") else "low"
-        tasks.append(generate_pair(client, chunk, pair_type, index, related,
-                                   semaphore, reasoning_effort=effort))
+        return [await generate_pair(client, chunk, pair_type, index, related,
+                                    semaphore, reasoning_effort=effort)]
+
+    by_chunk: Dict[str, List] = {}
+    for c, t in todo:
+        by_chunk.setdefault(c.id, []).append((c, t))
+    tasks = []
+    for cid, items in by_chunk.items():
+        c = items[0][0]
+        need = [t for _, t in items]
+        related = extract_cross_refs(c, index)
+        if "crossref" in need and not related:
+            need.remove("crossref")     # no resolvable cross references
+        if not need:
+            continue
+        if args.batch and len(need) > 1:
+            tasks.append(generate_pairs_batched(client, c, need, index,
+                                                related, semaphore))
+        else:
+            tasks.extend(one(c, t) for t in need)
+
+    # circuit breaker: if batched calls keep failing on this server, stop
+    # paying for them and run pure single-type mode
+    stats = {"batch_ok": 0, "batch_fail": 0}
 
     ok = rejected = 0
     with out_path.open("a", encoding="utf-8") as fh:
         for fut in asyncio.as_completed(tasks):
-            rec = await fut
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            fh.flush()
-            if rec["problems"]:
-                rejected += 1
-            else:
-                ok += 1
+            recs = await fut
+            if args.batch and len(recs) > 1:
+                if any(r.get("batched") for r in recs):
+                    stats["batch_ok"] += 1
+                else:
+                    stats["batch_fail"] += 1
+                    if stats["batch_fail"] >= 5 and stats["batch_ok"] < 2:
+                        print("batching keeps failing on this server: "
+                              "switching to single-type mode for this run")
+                        args.batch = False
+            for rec in recs:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                fh.flush()
+                if rec["problems"]:
+                    rejected += 1
+                else:
+                    ok += 1
             total = ok + rejected
             if total % 100 == 0:
-                print(f"  {total}/{len(tasks)} done, {ok} accepted, {rejected} rejected")
+                print(f"  {total}/{len(todo)} done, {ok} accepted, "
+                      f"{rejected} rejected "
+                      f"(batches ok={stats['batch_ok']} fail={stats['batch_fail']})")
     print(f"finished: {ok} accepted, {rejected} rejected -> {out_path}")
     return 0
 
@@ -341,6 +500,11 @@ def main(argv=None) -> int:
     p.add_argument("--data", type=Path, default=Path("data"))
     p.add_argument("--out", type=Path, default=Path("work/qa_raw.jsonl"))
     p.add_argument("--types", default=",".join(PAIR_TYPES))
+    p.add_argument("--batch", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="one teacher call per chunk for all pending pair "
+                        "types (chunk prefilled once); failed types fall "
+                        "back to single-type calls")
     p.add_argument("--handbooks", action="store_true",
                    help="also synthesize from handbook chunks (PHAK, AFH, AMT...)")
     p.add_argument("--concurrency", type=int, default=6)
