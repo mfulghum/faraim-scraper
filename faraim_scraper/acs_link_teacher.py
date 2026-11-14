@@ -534,7 +534,10 @@ async def _call(client, prompt: str, response_format, semaphore,
         if exc is None:
             raw, fin, tokinfo = task.result()
             try:
-                return json.loads(raw)
+                out = json.loads(raw)
+                print(f"    call ok after "
+                      f"{time.monotonic() - t0:.0f}s ({tokinfo})", flush=True)
+                return out
             except (json.JSONDecodeError, TypeError) as e:
                 print(f"    call #{_try + 1} unparseable after "
                       f"{time.monotonic() - t0:.0f}s (budget {budget}, "
