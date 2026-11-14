@@ -351,7 +351,10 @@ def plan_prompt(rows: List[dict], query_block: str, doc_title: str) -> str:
              "equipment requirements, 14 CFR 91.205(c)'), and for the whole "
              "code list the table-of-contents row numbers whose full text "
              "would contain those points. An answer missing any required "
-             "point FAILS the checkride — be complete, not minimal.", "",
+             "point FAILS the checkride — be complete, not minimal. Keep the "
+            "answer key TIGHT: 2-6 requirements per code, each one sentence "
+            "(< 25 words), always naming the governing rule (e.g. '91.205(c)') "
+            "when one applies.", "",
              "CONTENTS OF THE REFERENCED DOCUMENTS:", ""]
     for i, r in enumerate(rows, 1):
         preview = ""
