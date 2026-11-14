@@ -28,6 +28,9 @@ RAW_ID_IN_ANSWER_RE = re.compile(
 
 # Index/TOC/table pages: nothing to ground questions in.
 _DOT_LEADER_RE = re.compile(r"\.{6,}|…{3,}")
+# back-of-book index entries without dot leaders: 'dynamic rollover, 11-7'
+_INDEX_ENTRY_RE = re.compile(
+    r"^[^0-9]{1,60}?\b\d{1,2}[-–]\d{1,2}(?:\s*,\s*\d{1,2}[-–]\d{1,2})*\.?$")
 
 
 def is_index_like(text: str) -> bool:
@@ -39,6 +42,10 @@ def is_index_like(text: str) -> bool:
         return True
     leaders = sum(1 for l in lines if _DOT_LEADER_RE.search(l))
     if leaders / len(lines) > 0.25:
+        return True
+    entries = sum(1 for l in lines
+                  if _INDEX_ENTRY_RE.match(l) and any(c.isalpha() for c in l))
+    if entries / len(lines) > 0.6:
         return True
     alpha = sum(c.isalpha() for c in text)
     if alpha / max(1, len(text)) < 0.5:

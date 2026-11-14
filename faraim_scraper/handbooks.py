@@ -228,30 +228,36 @@ def _book_title(doc, fallback: str) -> str:
 def _detect_chapters(doc) -> Optional[List[Dict]]:
     """Find chapter-start pages for PDFs without a usable TOC.
 
-    Two signals: literal 'Chapter N' headings, and PHAK-style page labels
-    ('2-1' as the first line marks the first page of chapter 2).
+    Two signals, first content line of a page: 'Chapter N' heading, or a
+    PHAK-style page label 'N-1'. Candidates form the longest run of
+    increasing numbers with plausible gaps (chapter 1 often starts before
+    any scan offset, and single chapters can lack an 'N-1' label page).
     """
-    found: Dict[int, int] = {}
-    last_n, last_page = 0, 0
-    for p in range(12, len(doc)):
-        lines = doc[p].get_text().splitlines()
+    cands: List[Dict] = []
+    for p in range(len(doc)):
+        lines = [l.strip() for l in doc[p].get_text().splitlines() if l.strip()]
         if not lines:
             continue
-        head = "\n".join(lines[:6])
-        m = re.match(r"^[\s\d\-–.]*Chapter\s+(\d{1,2})\b", head)
+        m = re.match(r"^(?:Chapter|CHAPTER)\s+(\d{1,2})\b", lines[0])
         if not m:
-            m = re.match(r"^\s*(\d{1,2})[-–]1\s*$", lines[0])
+            m = re.match(r"^(\d{1,2})[-–]1$", lines[0])
         if m:
-            n = int(m.group(1))
-            # strictly increasing chapter numbers with a plausible gap:
-            # rejects figure labels like 'Figure 5-1' / captions '5-1'
-            if n == last_n + 1 and p - last_page >= 2:
-                found[n] = p + 1
-                last_n, last_page = n, p
-    if len(found) < 2:
+            cands.append({"n": int(m.group(1)), "p": p})
+    best: List[Dict] = []
+    run: List[Dict] = []
+    for c in cands:
+        if (not run
+                or run[-1]["n"] < c["n"] <= run[-1]["n"] + 3
+                and c["p"] - run[-1]["p"] >= 2):
+            run.append(c)
+        elif c["n"] != run[-1]["n"]:
+            run = [c]                    # out of order: restart the chain
+        if len(run) > len(best):
+            best = list(run)
+    if len(best) < 2:
         return None
-    return [{"title": f"Chapter {n}", "page_start": found[n]}
-            for n in sorted(found)]
+    return [{"title": f"Chapter {c['n']}", "page_start": c["p"] + 1}
+            for c in best]
 
 
 def _chapters(doc) -> List[Dict]:
@@ -296,7 +302,10 @@ def parse_handbook(pdf_path: Path, max_tokens: int = 1200,
         if not chapter_text:
             continue
         pieces = _split_oversized(chapter_text, max_tokens)[:max_chunks]
+        from .synthesize import is_index_like   # local: avoid import cycle
         for i, piece in enumerate(pieces):
+            if is_index_like(piece):
+                continue      # index/TOC pages: no grounding material
             chunks.append({
                 "id": f"hbk:{doc_id}:ch{ci + 1}" + (f"#{i + 1}" if len(pieces) > 1 else ""),
                 "handbook": doc_id, "handbook_title": title,

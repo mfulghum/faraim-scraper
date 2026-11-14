@@ -21,14 +21,19 @@ def main(files, data="data"):
         path = Path(f)
         if not path.is_file():
             continue
-        kept, dropped_idx, dropped_id = [], 0, 0
+        kept, dropped_idx, dropped_id, orphans = [], 0, 0, 0
         for l in path.read_text(encoding="utf-8").splitlines():
             try:
                 r = json.loads(l)
             except json.JSONDecodeError:
                 continue
             text = texts.get(r["chunk_id"])
-            if text is not None and is_index_like(text):
+            if text is None:
+                # chunk gone (re-chunked book or excluded doc): its pairs
+                # cite a nonexistent source. Drop; new ids synthesize fresh.
+                orphans += 1
+                continue
+            if is_index_like(text):
                 dropped_idx += 1
                 continue
             pair = r.get("pair") or {}
@@ -40,7 +45,7 @@ def main(files, data="data"):
         tmp.write_text("".join(l + "\n" for l in kept), encoding="utf-8")
         tmp.replace(path)
         print(f"{f}: kept {len(kept)}, dropped index-chunk {dropped_idx}, "
-              f"dropped raw-id {dropped_id}")
+              f"dropped raw-id {dropped_id}, dropped orphans {orphans}")
 
 
 if __name__ == "__main__":
