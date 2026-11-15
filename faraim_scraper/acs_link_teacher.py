@@ -819,8 +819,9 @@ def load_done(path: Path) -> set:
                 r = json.loads(l)
             except (json.JSONDecodeError, KeyError):
                 continue
-            if r.get("note") == "budget":
-                continue
+            if r.get("note") == "budget" or str(
+                    r.get("note", "")).startswith("error:"):
+                continue          # not terminal: redo on resume
             done.add(r["group"])
     return done
 
@@ -847,16 +848,38 @@ async def run(args) -> int:
 
     client = AsyncOpenAI(base_url=TEACHER_URL, api_key="none", timeout=900)
     semaphore = asyncio.Semaphore(args.concurrency)
-    tasks = [link_group(client, pool, g, semaphore) for g in todo]
-    ok = 0
+    # Worker pool, NOT gather-over-all-groups: 1000+ link_group coroutines
+    # started at once run their CPU-heavy synchronous prep (candidate-pool
+    # token counting) concurrently in the one event loop, starving it --
+    # call timeouts stopped firing and everything crawled.
+    queue: asyncio.Queue = asyncio.Queue()
+    for g in todo:
+        queue.put_nowait(g)
+    write_lock = asyncio.Lock()
+    done_n = 0
+
+    async def worker():
+        nonlocal done_n
+        while True:
+            try:
+                g = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            try:
+                rec = await link_group(client, pool, g, semaphore)
+            except Exception as exc:            # one bad group must not kill the run
+                rec = {"group": g["gid"], "links": [],
+                       "note": f"error:{type(exc).__name__}"}
+            async with write_lock:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                fh.flush()
+                done_n += 1
+                if done_n % 20 == 0:
+                    print(f"  {done_n}/{len(todo)} groups", flush=True)
+
     with out_path.open("a", encoding="utf-8") as fh:
-        for fut in asyncio.as_completed(tasks):
-            rec = await fut
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            fh.flush()
-            ok += 1
-            if ok % 20 == 0:
-                print(f"  {ok}/{len(tasks)} groups")
+        await asyncio.gather(*(worker()
+                               for _ in range(args.concurrency)))
     print(f"finished -> {out_path}")
     return 0
 
