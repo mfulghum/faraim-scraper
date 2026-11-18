@@ -447,12 +447,14 @@ async def run(args) -> int:
     for c, t in todo:
         by_chunk.setdefault(c.id, []).append((c, t))
     tasks = []
+    skipped_xref = 0
     for cid, items in by_chunk.items():
         c = items[0][0]
         need = [t for _, t in items]
         related = extract_cross_refs(c, index)
         if "crossref" in need and not related:
-            need.remove("crossref")     # no resolvable cross references
+            need.remove("crossref")
+            skipped_xref += 1   # no resolvable cross references in the text
         if not need:
             continue
         if args.batch and len(need) > 1:
@@ -490,6 +492,9 @@ async def run(args) -> int:
                 print(f"  {total}/{len(todo)} done, {ok} accepted, "
                       f"{rejected} rejected "
                       f"(batches ok={stats['batch_ok']} fail={stats['batch_fail']})")
+    if skipped_xref:
+        print(f"skipped {skipped_xref} crossref slots: no resolvable cross "
+              f"references in those chunks (legitimately unanswerable)")
     print(f"finished: {ok} accepted, {rejected} rejected -> {out_path}")
     return 0
 
