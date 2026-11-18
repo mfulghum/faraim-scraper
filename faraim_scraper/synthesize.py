@@ -379,7 +379,7 @@ def purge_stale_pairs(path: Path, texts: Dict[str, str]) -> None:
     Re-uses citations.normalize -- the same match validate_pair applies."""
     if not path.is_file():
         return
-    from .citations import normalize
+    from .citations import quote_matches
     kept, dropped = [], 0
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
@@ -393,7 +393,7 @@ def purge_stale_pairs(path: Path, texts: Dict[str, str]) -> None:
                 dropped += 1          # excluded/removed doc
                 continue
         elif pair.get("quotes") and any(
-                normalize(q.get("quote", "")) not in normalize(text)
+                not quote_matches(q.get("quote", ""), text)
                 for q in pair["quotes"]):
             dropped += 1
             continue

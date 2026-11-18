@@ -30,6 +30,17 @@ def normalize(text: str) -> str:
     return text.strip()
 
 
+def quote_matches(quote: str, text: str) -> bool:
+    """Verbatim test with one tolerated PDF artifact: soft hyphenation at
+    line breaks ('pas- sengers' in the extraction vs 'passengers' quoted by
+    the teacher). Hyphens are folded out of BOTH sides, so nothing is
+    invented -- only line-break evidence is ignored."""
+    if normalize(quote) in normalize(text):
+        return True
+    fold = lambda s: normalize(s).replace("-", "").replace(" ", "")
+    return fold(quote) in fold(text)
+
+
 def _clean_title(title: Optional[str]) -> str:
     if not title:
         return ""
@@ -177,7 +188,7 @@ class SectionIndex:
         return (self.data_dir / record["txt_path"]).read_text(encoding="utf-8")
 
     def quote_in_section(self, quote: str, record: dict) -> bool:
-        return normalize(quote) in normalize(self.text(record))
+        return quote_matches(quote, self.text(record))
 
     def answer_cites(self, answer: str, record: dict) -> bool:
         norm_answer = normalize(answer)

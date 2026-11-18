@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from .acs_links import HB_CODE_ALIASES, _hb_key, parse_refs
-from .citations import normalize
+from .citations import quote_matches
 from .dataset import count_tokens
 
 TEACHER_URL = os.environ.get("FARAIM_TEACHER_URL", "http://steakbox.local:8888/v1")
@@ -413,7 +413,7 @@ def validate_links(raw_links: List[dict], passages: List[dict],
         if not (1 <= tid <= len(passages)):
             continue
         p = passages[tid - 1]
-        if not quote.strip() or normalize(quote) not in normalize(p["text"]):
+        if not quote.strip() or not quote_matches(quote, p["text"]):
             continue
         key = (code, p["html_path"])
         if key in seen:
@@ -783,12 +783,12 @@ async def gap_fill(client, pool: CandidatePool, codes: List[str],
                                   GAP_FORMAT, semaphore, max_tokens=4096,
                                   effort="low")
                 q = ((res or {}).get("quote") or "").strip()
-                if q and normalize(q) in normalize(p["text"]):
+                if q and quote_matches(q, p["text"]):
                     quote, evidence = q, "llm gap-fill"
                     break
             if not quote:  # mechanical fallback: the named paragraph itself
                 block = named_paragraph(p["text"], " ".join(reqs), sid)
-                if block and normalize(block) in normalize(p["text"]):
+                if block and quote_matches(block, p["text"]):
                     quote, evidence = block, "llm gap-fill (auto-quote)"
             entry["ok"] = bool(quote)
             if not quote:

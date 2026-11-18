@@ -5,7 +5,18 @@ import json
 import pytest
 
 from faraim_scraper import synthesize
+from faraim_scraper.citations import quote_matches
 from faraim_scraper.synthesize import purge_stale_pairs
+
+
+def test_quote_matches_soft_hyphenation():
+    text = ("PAYLOAD—The term used for pas- sengers, baggage, and cargo. "
+            "The well-known rule applies.")
+    assert quote_matches("The term used for passengers, baggage, and cargo", text)
+    assert quote_matches("pas- sengers, baggage", text)          # verbatim too
+    assert quote_matches("The well known rule applies", text)    # hyphen fold
+    assert not quote_matches("The term used for cargo only", text)
+
 
 
 class _Msg:
