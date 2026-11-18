@@ -371,30 +371,41 @@ def load_done(path: Path) -> set:
     return done
 
 
-def purge_stale_pairs(path: Path, texts: Dict[str, str]) -> None:
-    """Drop checkpoint records whose quotes no longer verify against the
-    CURRENT chunk text. Chunk ids are reused when a corpus is rebuilt
-    (re-chunking shifts piece numbering), so id-existence is not enough:
-    an old pair can cite a live id whose text moved to another chapter.
-    Re-uses citations.normalize -- the same match validate_pair applies."""
+def purge_stale_pairs(path: Path, texts: Dict[str, str],
+                      index: "SectionIndex") -> None:
+    """Drop checkpoint records that no longer verify. Uses the SAME bar as
+    validate_pair at generation time: each quote must verbatim-match the
+    text of the section ITS OWN section_id resolves to (chunks are only
+    sampling units -- an answer legitimately quoting real regulatory text
+    from elsewhere in the cited section is not stale). Chunk ids are also
+    checked: handbook pairs whose chunk vanished (excluded doc) go even if
+    the quote matches somewhere else. An unresolvable section_id means the
+    corpus moved under the pair: stale."""
     if not path.is_file():
         return
-    from .citations import quote_matches
+    from .citations import quote_matches, resolve_section_id
     kept, dropped = [], 0
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             rec = json.loads(line)
         except json.JSONDecodeError:
             continue
-        text = texts.get(rec.get("chunk_id"))
         pair = rec.get("pair") or {}
-        if text is None:
-            if str(rec.get("chunk_id", "")).startswith("hbk:"):
-                dropped += 1          # excluded/removed doc
-                continue
-        elif pair.get("quotes") and any(
-                not quote_matches(q.get("quote", ""), text)
-                for q in pair["quotes"]):
+        if (rec.get("chunk_id") is None
+                or (str(rec.get("chunk_id", "")).startswith("hbk:")
+                    and rec["chunk_id"] not in texts)):
+            dropped += 1              # excluded/removed doc
+            continue
+        stale = False
+        for q in pair.get("quotes") or []:
+            srec = resolve_section_id(q.get("section_id", ""), index)
+            if srec is None:
+                stale = True          # corpus rebuilt under this id
+                break
+            if not quote_matches(q.get("quote", ""), index.text(srec)):
+                stale = True
+                break
+        if stale:
             dropped += 1
             continue
         kept.append(line)
@@ -414,7 +425,7 @@ async def run(args) -> int:
     hb = build_handbook_chunks(args.data)
     if hb:
         chunks += hb
-    purge_stale_pairs(Path(args.out), {c.id: c.text for c in chunks})
+    purge_stale_pairs(Path(args.out), {c.id: c.text for c in chunks}, index)
     if not args.handbooks:
         chunks = [c for c in chunks if not c.id.startswith("hbk:")]
     if args.only:

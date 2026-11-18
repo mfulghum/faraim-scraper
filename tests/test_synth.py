@@ -107,18 +107,43 @@ def test_generate_pairs_batched_api_error_falls_back_all(monkeypatch):
 def test_purge_stale_pairs(tmp_path):
     path = tmp_path / "qa.jsonl"
     good = {"chunk_id": "hbk:B:ch1#1", "type": "factual",
-            "pair": {"quotes": [{"quote": "Altitude 2,000 feet."}]}}
+            "pair": {"quotes": [{"section_id": "hbk:B:ch1#1",
+                                 "quote": "Altitude 2,000 feet."}]}}
     stale = {"chunk_id": "hbk:B:ch1#2", "type": "factual",
-             "pair": {"quotes": [{"quote": "text from the OLD chunking"}]}}
+             "pair": {"quotes": [{"section_id": "hbk:B:ch1#2",
+                                  "quote": "text from the OLD chunking"}]}}
+    unknown = {"chunk_id": "hbk:B:ch1#1", "type": "factual",
+               "pair": {"quotes": [{"section_id": "hbk:B:ch9#9",
+                                    "quote": "anything"}]}}
+    # quoting real text from ELSEWHERE in the cited section: not stale
+    # (the batch-era double standard this purge must not repeat)
+    section_wide = {"chunk_id": "far:91:91.113#2", "type": "factual",
+                    "pair": {"quotes": [{"section_id": "91.113",
+                                         "quote": "Right of way."}]}}
     orphan = {"chunk_id": "hbk:GONE:ch1", "type": "factual",
               "pair": {"quotes": []}}
     noq = {"chunk_id": "hbk:B:ch1#1", "type": "abstention", "pair": {}}
     path.write_text("\n".join(json.dumps(r) for r in
-                              (good, stale, orphan, noq)) + "\n",
+                              (good, stale, unknown, section_wide,
+                               orphan, noq)) + "\n",
                     encoding="utf-8")
     texts = {"hbk:B:ch1#1": "…the aircraft altitude 2,000\u2009feet.",
              "hbk:B:ch1#2": "brand new text after re-chunking"}
-    purge_stale_pairs(path, texts)
+
+    class PurgeIndex:
+        section_texts = {"hbk:B:ch1#1": "…the aircraft altitude 2,000 feet.",
+                         "hbk:B:ch1#2": "brand new text after re-chunking",
+                         "91.113": "Right of way. plus other stuff"}
+
+        def get(self, sid):
+            if sid in self.section_texts:
+                return {"section_id": sid, "doc": "far", "txt_path": None}
+            return None
+
+        def text(self, rec):
+            return self.section_texts[rec["section_id"]]
+
+    purge_stale_pairs(path, texts, PurgeIndex())
     left = [json.loads(l) for l in path.read_text().splitlines()]
     assert [r["chunk_id"] + r["type"][:4] for r in left] == \
-        ["hbk:B:ch1#1fact", "hbk:B:ch1#1abst"]
+        ["hbk:B:ch1#1fact", "far:91:91.113#2fact", "hbk:B:ch1#1abst"]
