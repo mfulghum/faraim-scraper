@@ -89,17 +89,28 @@ def citation_variants(record: dict) -> List[str]:
 
 def canonical_hb_citation(chunk: dict) -> str:
     """'FAA-H-8083-25C — Pilot's Handbook of Aeronautical Knowledge:
-    Chapter 4, Principles of Flight (pp. 4-1-4-30)'."""
-    ch = f"Chapter {chunk['chapter']}"
-    if chunk.get("chapter_title") and chunk["chapter_title"] != ch:
-        ch += f", {chunk['chapter_title']}"
+    Chapter 4, Principles of Flight (pp. 4-1-4-30)'.
+
+    When chapter_title already carries the number ('Chapter 4 - Approaches')
+    it is authoritative: the numeric 'chapter' field is only a positional
+    index from chunking and can disagree after front-matter TOC entries."""
+    title = chunk.get("chapter_title") or ""
+    if re.match(r"(?:Chapter|CHAPTER)\s+\d+\b", title):
+        ch = re.sub(r"^CHAPTER\b", "Chapter", title.strip())
+    else:
+        ch = f"Chapter {chunk['chapter']}"
+        if title:
+            ch += f", {title}"
     pages = f" (pp. {chunk['pages']})" if chunk.get("pages") else ""
     return f"{chunk['handbook']} — {chunk['handbook_title']}: {ch}{pages}"
 
 
 def hb_citation_variants(chunk: dict) -> List[str]:
-    v = [f"{chunk['handbook']}, Chapter {chunk['chapter']}",
-         f"{chunk['handbook']} Chapter {chunk['chapter']}",
+    title = chunk.get("chapter_title") or ""
+    m = re.match(r"(?:Chapter|CHAPTER)\s+(\d+)\b", title)
+    num = m.group(1) if m else str(chunk["chapter"])
+    v = [f"{chunk['handbook']}, Chapter {num}",
+         f"{chunk['handbook']} Chapter {num}",
          chunk["handbook"]]
     return v
 
