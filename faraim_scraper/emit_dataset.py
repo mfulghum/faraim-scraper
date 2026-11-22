@@ -235,6 +235,9 @@ def build_retrieval_records(recs: List[dict], chunks: List[Chunk],
     queries, qrels, seen_queries = [], [], set()
     for rec in recs:
         pair = rec["pair"]
+        base = chunk_by_id.get(rec["chunk_id"])
+        if base is None or base.split != "train":
+            continue        # held-out units stay out of retrieval training
         key = normalize_key(pair["question"])
         if key in seen_queries:
             continue
@@ -256,6 +259,8 @@ def build_retrieval_records(recs: List[dict], chunks: List[Chunk],
                     "section_id": corpus[i].section_id,
                     "title": corpus[i].title} for i in ids]
     for hb in (handbook_records or []):
+        if hb.get("split") != "train":
+            continue        # held-out books must not enter the train corpus
         corpus_rows.append({"_id": hb["id"], "text": hb["text"],
                             "section_id": hb["id"],
                             "title": f"{hb['handbook_title']} — {hb.get('chapter_title') or ''}"})
