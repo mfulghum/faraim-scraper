@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 # Normalization for verbatim quote matching and citation presence checks.
+
+# Highest chapter number any real FAA handbook in the corpus reaches (28,
+# FAA-H-8083-28B). Above this, a positional chapter index means heading-by-
+# heading chunking, and the number must not be presented as real.
+MAX_TRUSTED_CHAPTER = 40
 _TRANSLATE = {
     ord("\u2018"): "'", ord("\u2019"): "'",   # curly single quotes
     ord("\u201c"): '"', ord("\u201d"): '"',    # curly double quotes
@@ -102,27 +107,41 @@ def canonical_hb_citation(chunk: dict) -> str:
     """'FAA-H-8083-25C — Pilot's Handbook of Aeronautical Knowledge:
     Chapter 4, Principles of Flight (pp. 4-1-4-30)'.
 
-    When chapter_title already carries the number ('Chapter 4 - Approaches')
-    it is authoritative: the numeric 'chapter' field is only a positional
-    index from chunking and can disagree after front-matter TOC entries."""
+    Chapter numbers are trusted only when they can be real: the number in
+    chapter_title is authoritative (positional indices drift after
+    front-matter TOC entries), and a positional number counts only if it
+    is plausible for an actual FAA handbook (<= MAX_TRUSTED_CHAPTER);
+    heading-by-heading chunking inflates it into the hundreds, so those
+    citations drop the invented number and use the section title."""
     title = chunk.get("chapter_title") or ""
-    if re.match(r"(?:Chapter|CHAPTER)\s+\d+\b", title):
+    if re.match(r"(?:Chapter|CHAPTER)\s+\d+[A-Za-z]?\b", title):
         ch = re.sub(r"^CHAPTER\b", "Chapter", title.strip())
-    else:
+    elif chunk["chapter"] <= MAX_TRUSTED_CHAPTER:
         ch = f"Chapter {chunk['chapter']}"
         if title:
             ch += f", {title}"
+    elif title:
+        ch = title                       # invented positional number: drop it
+    else:
+        ch = f"Chapter {chunk['chapter']}"
     pages = f" (pp. {chunk['pages']})" if chunk.get("pages") else ""
     return f"{chunk['handbook']} — {chunk['handbook_title']}: {ch}{pages}"
 
 
 def hb_citation_variants(chunk: dict) -> List[str]:
     title = chunk.get("chapter_title") or ""
-    m = re.match(r"(?:Chapter|CHAPTER)\s+(\d+)\b", title)
-    num = m.group(1) if m else str(chunk["chapter"])
-    v = [f"{chunk['handbook']}, Chapter {num}",
-         f"{chunk['handbook']} Chapter {num}",
-         chunk["handbook"]]
+    m = re.match(r"(?:Chapter|CHAPTER)\s+(\d+[A-Za-z]?)\b", title)
+    if m:
+        num = m.group(1)
+    elif chunk["chapter"] <= MAX_TRUSTED_CHAPTER:
+        num = str(chunk["chapter"])
+    else:
+        num = None                        # positional number is fabricated
+    v = ([f"{chunk['handbook']}, Chapter {num}",
+          f"{chunk['handbook']} Chapter {num}"] if num else [])
+    if title:
+        v += [f"{chunk['handbook']}, {title}", f"{chunk['handbook']} {title}"]
+    v.append(chunk["handbook"])
     return v
 
 

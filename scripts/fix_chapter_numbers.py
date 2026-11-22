@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from faraim_scraper.citations import canonical_hb_citation
 
 CHUNKS = Path("data/handbooks/handbook_chunks.jsonl")
-NUM_TITLE = re.compile(r"(?:Chapter|CHAPTER)\s+\d+\b")
+NUM_TITLE = re.compile(r"(?:Chapter|CHAPTER)\s+\d+[A-Za-z]?\b")
 
 
 def old_canonical(chunk: dict) -> str:
@@ -70,14 +70,22 @@ def rewrite(path: Path, fields, extract, replace) -> tuple:
 def main():
     recs = [json.loads(l) for l in
             CHUNKS.read_text(encoding="utf-8").splitlines()]
+    from faraim_scraper.citations import MAX_TRUSTED_CHAPTER
     pairs = []
     for r in recs:
         ct = r.get("chapter_title") or ""
         m = NUM_TITLE.match(ct)
-        if m and int(re.search(r"\d+", m.group(0)).group()) != r["chapter"]:
+        drifted = m and int(re.search(r"\d+", m.group(0)).group()) != r["chapter"]
+        invented = (not m and r["chapter"] > MAX_TRUSTED_CHAPTER and bool(ct))
+        if drifted or invented:
             old, new = old_canonical(r), canonical_hb_citation(r)
             if old != new:
                 pairs.append((old, new))
+            # teacher-paraphrased renderings ("...: Chapter 458, Title, pp. x-y)")
+            # dodge the exact canonical string, so also fold the bare
+            # "Chapter <positional>, <title>" prefix wherever it appears.
+            if ct:
+                pairs.append((f"Chapter {r['chapter']}, {ct}", ct))
     pairs.sort(key=lambda p: -len(p[0]))   # longest first: no partial hits
     print(f"chunks with drifted chapter numbers: {len(pairs)}")
 
