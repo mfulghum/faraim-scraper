@@ -91,7 +91,9 @@ def test_build_handbook_chunks_shape(tmp_path):
     assert all(isinstance(c, Chunk) and c.doc == "handbook" for c in chunks)
     assert chunks[0].part == "FAA-H-8083-31B"
     assert chunks[0].section_id == chunks[0].id == "hbk:FAA-H-8083-31B:ch3"
-    assert all(c.split == "train" for c in chunks)
+    # whole-book holdout: every chunk of a book shares one deterministic split
+    from faraim_scraper.dataset import assign_split_handbook
+    assert all(c.split == assign_split_handbook(c.part) for c in chunks)
 
 
 def test_build_handbook_chunks_missing_file(tmp_path):

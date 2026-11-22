@@ -6,6 +6,7 @@ boundaries. Whole units (parts/chapters) are held out for validation and
 testing so no QA pair from one unit straddles splits.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -68,6 +69,18 @@ def assign_split(record: dict) -> str:
     if unit in TEST_AIM_UNITS:
         return "test"
     if unit in VAL_AIM_UNITS:
+        return "val"
+    return "train"
+
+
+def assign_split_handbook(book: str) -> str:
+    """Whole-book holdout for handbooks, same leakage rule as FAR parts /
+    AIM chapters: every chunk AND QA pair of a held-out book lives in one
+    split. Deterministic sha256 bucketing (~10% test, ~10% val)."""
+    h = int(hashlib.sha256(book.encode("utf-8")).hexdigest(), 16) % 10
+    if h == 0:
+        return "test"
+    if h == 1:
         return "val"
     return "train"
 
@@ -248,7 +261,7 @@ def build_handbook_chunks(data_dir: Path) -> List[Chunk]:
             id=c["id"], text=c["text"], doc="handbook", part=c["handbook"],
             chapter=str(c["chapter"]), section_id=c["id"], title=title,
             url="", n_tokens=c.get("n_tokens") or count_tokens(c["text"]),
-            split="train"))
+            split=assign_split_handbook(c["handbook"])))
     return out
 
 

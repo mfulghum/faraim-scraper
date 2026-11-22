@@ -188,6 +188,11 @@ def build_summary_records(work_dir: Path) -> List[dict]:
         if r["id"] in seen:
             continue
         seen.add(r["id"])
+        from .dataset import assign_split, assign_split_handbook
+        if r.get("doc") == "handbook":
+            r["split"] = assign_split_handbook(r.get("part") or "")
+        else:
+            r["split"] = assign_split(r)
         out.append({k: v for k, v in r.items() if k != "n_tokens_src"})
     return out
 
