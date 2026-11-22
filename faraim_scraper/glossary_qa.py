@@ -167,6 +167,12 @@ def _hb_pair(chunk: dict, term: str, definition: str) -> dict:
             "citations": [chunk["id"]]}
 
 
+def _sentence_share(defs) -> float:
+    defs = list(defs)
+    ok = sum(1 for d in defs if len(d) >= 40 and any(c.islower() for c in d))
+    return ok / max(1, len(defs))
+
+
 def _hb_glossary_chunks(data_dir: Path) -> List[dict]:
     path = data_dir / "handbooks" / "handbook_chunks.jsonl"
     out = []
@@ -179,9 +185,12 @@ def _hb_glossary_chunks(data_dir: Path) -> List[dict]:
             out.append(c)
             continue
         # some glossary chunks begin mid-page ('G-1 \n ABSOLUTE ALTITUDE—...')
-        # with no 'Glossary' marker near the start: detect by entry density
-        entries = len(_AIM_ENTRY_RE.findall(c["text"])) + len(parse_hb_entries(c["text"]))
-        if entries >= 4:
+        # with no 'Glossary' marker near the start: detect by entry density.
+        # Reproduced charts/METARs are dense uppercase too, so demand that
+        # most entries read like sentences, not all-caps chart labels.
+        entries = (parse_aim_entries(c["text"])
+                   + parse_hb_entries(c["text"]))
+        if len(entries) >= 4 and _sentence_share(d for _, d in entries) >= 0.6:
             out.append(c)
     return out
 
@@ -247,8 +256,9 @@ def _pdf_glossary_entries(pdf_name: str, pages: str,
             # acronym rosters ('CUPS—consolidated uniform payroll system')
             # are dense bold pages too: terse lowercase expansions are not
             # glossary definitions
-            terse = (definition[:1].islower()
-                     and "." not in definition and len(definition) < 70)
+            terse = (len(definition) < 70 and "." not in definition
+                     and (definition[:1].islower()
+                          or not any(c.islower() for c in definition)))
             # a real entry reads 'TERM- definition' / 'TERM. definition';
             # stray bold spans inside prose must not masquerade as terms
             if term and _TERMISH_RE.match(term) and not _CAPTION_RE.match(term) \
@@ -347,6 +357,10 @@ def generate(data_dir: Path) -> List[dict]:
             term = _clean_term(term)
             if term is None:
                 continue
+            # all-caps 'definitions' are chart labels, METAR fragments and
+            # signature blocks, not prose definitions
+            if not any(c.islower() for c in definition):
+                continue
             key_t = normalize(term.lower())
             if key_t in seen or len(definition) < 20 or _CAPTION_RE.match(term):
                 continue
@@ -355,8 +369,9 @@ def generate(data_dir: Path) -> List[dict]:
             if re.fullmatch(r"[A-Z0-9]{1,14}", term.strip()) \
                     and "." not in definition and len(definition) < 70:
                 continue
-            home = next((c for c in chunks if quote_matches(definition, c["text"])),
-                        None)
+            home = next((c for c in chunks
+                         if c["id"] in picked_ids
+                         and quote_matches(definition, c["text"])), None)
             if home is None:
                 continue
             seen.add(key_t)
