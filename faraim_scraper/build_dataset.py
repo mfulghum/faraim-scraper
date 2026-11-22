@@ -74,6 +74,9 @@ one split): test — {hb_test}; validation — {hb_val}.
   4 pair types per chunk: factual, pilot-phrased, cross-reference, abstention —
   applied to FAR/AIM chunks and to every handbook, including the AMT mechanic
   handbooks (General, Powerplant, Airframe)
+- Glossary entries: every entry of the AIM Pilot/Controller Glossary and of
+  the handbook glossaries (terms located via bold font flags in the source
+  PDFs) gets its own definition Q&A quoting the entry verbatim
 - Filter statistics: `{filter_stats}`
 
 ## Intended use / limitations
@@ -162,8 +165,10 @@ def main(argv=None) -> int:
                         "dropped_duplicates"):
                 if key in stats_hb and key in stats:
                     stats[key] += stats_hb[key]
-            stats["by_type"] = {k: stats["by_type"].get(k, 0) + v
-                                for k, v in stats_hb["by_type"].items()}
+            merged = dict(stats.get("by_type", {}))
+            for k, v in stats_hb["by_type"].items():
+                merged[k] = merged.get(k, 0) + v
+            stats["by_type"] = merged
             stats[skey] = stats_hb
         (args.work / "filter_stats.json").write_text(
             json.dumps(stats, indent=2), encoding="utf-8")
