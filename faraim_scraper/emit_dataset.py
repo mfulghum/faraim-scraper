@@ -205,8 +205,10 @@ def build_handbook_records(data_dir: Path) -> List[dict]:
         return out
     for line in path.read_text(encoding="utf-8").splitlines():
         c = json.loads(line)
+        from .dataset import assign_split_handbook
         out.append({
-            "id": c["id"], "split": "train", "kind": "handbook",
+            "id": c["id"], "split": assign_split_handbook(c["handbook"]),
+            "kind": "handbook",
             "handbook": c["handbook"], "handbook_title": c["handbook_title"],
             "chapter": c["chapter"], "chapter_title": c.get("chapter_title"),
             "pages": c.get("pages"), "text": c["text"],
