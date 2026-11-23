@@ -2,7 +2,12 @@
 
 Run inside a training environment with:
     python -m venv .venv-train && .venv-train/bin/pip install \
-        torch transformers trl peft accelerate datasets
+        torch transformers trl peft accelerate datasets ninja
+    # Qwen3.8 hybrid attention is ~2x faster with these kernels (build them
+    # with CPATH=<python headers> since aarch64 wheels are not published):
+    CPATH=/tmp/opencode/pyinc/usr/include/python3.12:/tmp/opencode/pyinc/usr/include \
+        .venv-train/bin/pip install flash-linear-attention \
+        --no-build-isolation causal_conv1d
 Smoke test (end-to-end, small model, 2 steps):
     .venv-train/bin/python train_lora.py --model unsloth/Qwen3-0.6B --max-steps 2
 Real run on the DGX Spark (128 GiB unified memory; 27B bf16 + LoRA fits):
