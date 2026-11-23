@@ -51,11 +51,18 @@ def _load_split(dataset_dir: Path, config: str, split: str):
     return ds.select_columns(["messages"])
 
 
-def _load_model(model_id: str):
+def _load_model(model_id: str, device_map: str = "single"):
     import torch
     from transformers import AutoModelForCausalLM
-    kwargs = dict(device_map="auto", attn_implementation="sdpa",
-                  low_cpu_mem_usage=True)
+    # 'single' keeps everything on cuda:0. Never let accelerate offload to
+    # disk: TRL's fused LM head crashes on meta-device parameters, and a
+    # silent offload also means the GPU was not actually free (kill the
+    # serving process and check nvidia-smi before retrying).
+    kwargs = dict(attn_implementation="sdpa", low_cpu_mem_usage=True)
+    if device_map == "single":
+        kwargs["device_map"] = {"": "cuda:0"}
+    elif device_map != "none":
+        kwargs["device_map"] = device_map
     try:                                      # transformers >= 4.56
         return AutoModelForCausalLM.from_pretrained(
             model_id, dtype=torch.bfloat16, **kwargs)
@@ -93,6 +100,11 @@ def main() -> int:
     p.add_argument("--save-total-limit", type=int, default=3)
     p.add_argument("--eval-steps", type=int, default=200,
                    help="evaluate on val.parquet every N steps (0 = never)")
+    p.add_argument("--device-map", default="single",
+                   choices=("single", "auto", "none"),
+                   help="single = pin to cuda:0 (default; no silent disk "
+                        "offload); auto = accelerate placement; "
+                        "none = load on CPU first")
     p.add_argument("--max-steps", type=int, default=-1)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume", action="store_true")
@@ -111,7 +123,7 @@ def main() -> int:
     if tokenizer.chat_template is None:
         raise SystemExit(f"{args.model} tokenizer has no chat template -- "
                          "completion_only_loss needs one")
-    model = _load_model(args.model)
+    model = _load_model(args.model, args.device_map)
     model.config.use_cache = False
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()     # needed with grad checkpointing
