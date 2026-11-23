@@ -90,6 +90,7 @@ def main() -> int:
     p.add_argument("--lora-alpha", type=int, default=32)
     p.add_argument("--logging-steps", type=int, default=10)
     p.add_argument("--save-steps", type=int, default=200)
+    p.add_argument("--save-total-limit", type=int, default=3)
     p.add_argument("--eval-steps", type=int, default=200,
                    help="evaluate on val.parquet every N steps (0 = never)")
     p.add_argument("--max-steps", type=int, default=-1)
@@ -148,7 +149,7 @@ def main() -> int:
         logging_steps=args.logging_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
-        save_total_limit=3,
+        save_total_limit=args.save_total_limit,
         eval_strategy=("steps" if eval_ds else "no"),
         eval_steps=(args.eval_steps if eval_ds else None),
         per_device_eval_batch_size=1,
