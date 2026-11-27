@@ -69,6 +69,37 @@ Flash-Next, same lineage) + the SYSTEM_PROMPT contract + serving-time quote
 validation. The merge (out/faraim-27b-merged, 51 GB) is kept as an artifact;
 delete at the user's discretion.
 
+## End-to-end validated RAG (scripts/rag_served.py, 2026-11-27)
+
+Retrieval (bge-base dense over the full 9,781-section index + LLM listwise
+rerank + query-mention pinning) -> generation (served Flash-Next, thinking
+off, training-format prompt) -> verbatim-quote/citation gate with one
+retry; anything unverified becomes a clean refusal.
+
+Gold set (120), `work/rag_gold_final.jsonl`:
+
+| measure | value |
+|---|---|
+| retrieval@4 hit rate | 90/120 = 75.0% |
+| validated accuracy | 74/120 = 61.7% |
+| precision on shipped answers | 74/96 = 77.1% |
+| fabricated quotes shipped | 0 (gate-enforced) |
+| clean refusals | 24/120 = 20.0% |
+| gate: retry repairs | 29/53 first-pass failures repaired |
+| gate: false-reject cost | 16 refusals would have cited correctly |
+| validated acc when retrieval hits | 74/90 = 82.2% |
+
+vs the same model WITHOUT validation: ~49-62% raw accuracy with the
+remainder confident fabrications ("15 minutes before the operation",
+§101.33(b)(1), invented handbook quotes). The gate converts hallucinations
+into refusals -- that is the reliability the fine-tune failed to deliver,
+manufactured at inference instead.
+
+Remaining headroom (in order of expected payoff): retrieval recall (pool
+recall 80%; hybrid BM25+dense or a larger embedder -> ceiling ~75-85%
+overall), embedder upgrade, k=6, few-shot exemplars in the prompt for
+table-heavy AIM sections (the dominant false-reject source).
+
 ## Reading
 
 1. **Oracle mode is the metric that matters.** 95.8% shows the fine-tune
