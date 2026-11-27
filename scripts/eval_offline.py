@@ -48,7 +48,12 @@ def main() -> int:
     p.add_argument("--data", type=Path, default=Path("data"))
     p.add_argument("--gold", default="gold", choices=("gold", "acs", "both"))
     p.add_argument("--gold-path", type=Path, default=None)
-    p.add_argument("--mode", choices=("closed", "oracle"), default="closed")
+    p.add_argument("--mode", choices=("closed", "oracle", "distractor"),
+                   default="closed",
+                   help="closed: no context; oracle: gold excerpt provided; "
+                        "distractor: irrelevant excerpt provided -- correct "
+                        "behavior is to refuse (tests the SFT abstention "
+                        "contract that a base model ignores)")
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--batch-size", type=int, default=4)
@@ -62,6 +67,9 @@ def main() -> int:
 
     from faraim_scraper.config import HF_DATASET_DIR
     index = SectionIndex(args.data)
+    if args.mode == "distractor" and args.gold == "acs":
+        raise SystemExit("distractor mode applies to gold rows only")
+
     sets = []
     for name in (("gold", "acs") if args.gold == "both" else (args.gold,)):
         if args.gold_path and args.gold != "both":
@@ -75,6 +83,38 @@ def main() -> int:
             import random
             items = random.Random(args.seed).sample(items, args.limit)
         sets.append((name, items))
+
+    distractors = {}
+    if args.mode == "distractor":
+        # one irrelevant excerpt per row: a different doc than the gold
+        # source, so the model cannot answer from the given text at all
+        import random as _r
+        rng = _r.Random(args.seed)
+        pool = list(index.by_id.items())
+        rng.shuffle(pool)
+        cache = {}
+        def _text(sid, rec):
+            if sid not in cache:
+                try:
+                    cache[sid] = index.text(rec)
+                except Exception:
+                    cache[sid] = ""
+            return cache[sid]
+        for name, items in sets:
+            chosen = []
+            for it in items:
+                banned = set(it.get("expected_citations", [])) \
+                    | {it.get("source_section_id")}
+                gold_doc = (index.get(it.get("source_section_id") or "")
+                            or {}).get("doc")
+                for sid, rec in pool:
+                    if sid in banned or rec.get("doc") == gold_doc:
+                        continue
+                    t = _text(sid, rec)
+                    if 200 <= len(t) <= 4000:
+                        chosen.append((sid, t))
+                        break
+            distractors[name] = chosen
 
     tok = AutoTokenizer.from_pretrained(args.model)
     tok.padding_side = "left"
@@ -98,18 +138,28 @@ def main() -> int:
             return [tok.apply_chat_template(
                 m, tokenize=False, add_generation_prompt=True) for m in msgs]
 
+    import re
+    _REFUSE_RE = re.compile(
+        r"\bdo(es)?\s+not\s+(address|cover|mention|discuss|contain|specify"
+        r"|state|include|provide)|not\s+covered|no\s+provision"
+        r"|does\s+not\s+specifically", re.I)
+
     out_fh = args.out.open("w", encoding="utf-8") if args.out else None
     for name, items in sets:
         rows = []
         for i in range(0, len(items), args.batch_size):
             batch = items[i:i + args.batch_size]
+            def content(j, it):
+                user = _user_prompt(it, "closed" if args.mode == "distractor"
+                                    else args.mode, index)
+                if args.mode == "distractor":
+                    sid, txt = distractors[name][i + j]
+                    user += f"\n\nProvided excerpt:\n{txt}"
+                return user
             msgs = [[{"role": "system", "content": SYSTEM_PROMPT},
-                     {"role": "user",
-                      "content": _user_prompt(it, args.mode, index)}]
-                    for it in batch]
-            texts = [tok.apply_chat_template(
-                m, tokenize=False, add_generation_prompt=True,
-                enable_thinking=args.thinking) for m in msgs]
+                     {"role": "user", "content": content(j, it)}]
+                    for j, it in enumerate(batch)]
+            texts = render(msgs)
             enc = tok(texts, return_tensors="pt", padding=True)
             enc = {k: v.to(model.device) for k, v in enc.items()}
             with torch.no_grad():
@@ -118,7 +168,16 @@ def main() -> int:
                     do_sample=False, pad_token_id=tok.pad_token_id)
             new = gen[:, enc["input_ids"].shape[1]:]
             answers = tok.batch_decode(new, skip_special_tokens=True)
-            for it, ans in zip(batch, answers):
+            for j, (it, ans) in enumerate(zip(batch, answers)):
+                if args.mode == "distractor":
+                    ok = bool(_REFUSE_RE.search(ans))
+                    cov = 1.0 if ok else 0.0
+                    rows.append({"gold": name,
+                                 "question": _user_prompt(it, "closed", index)[:200],
+                                 "distractor_section_id": distractors[name][i + j][0],
+                                 "answer": ans, "expected_citations": [],
+                                 "citations_ok": ok, "coverage": cov})
+                    continue
                 if "gold_sections" in it:
                     ok, cov = score_acs_gold(it, ans, index)
                     exp = [g["section_id"] for g in it["gold_sections"]]
