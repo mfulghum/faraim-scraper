@@ -108,6 +108,32 @@ Progression of the same scorer/config line: dense 61.7% -> +BM25 64.2% ->
 +windowed embeddings & single HyDE 69.2% -> +3-perspective HyDE 70.8-75.0%
 -> +cross-source attribution retry 72.5-79.2%.
 
+## ACS gold set (120 sampled objectives, seed 7) -- read with care
+
+| measure | chunk-exact (as scored) | chapter-relaxed |
+|---|---|---|
+| retrieval@4 | 24.2% | 72% |
+| retrieval@16 | ~26% (pool) | **93%** |
+| validated accuracy | 21.7% | -- |
+| gate: fabricated quotes shipped | **0** (63 clean refusals) | -- |
+
+**This is mostly a measurement artifact, not a system failure.** ACS
+"questions" are context-free objective fragments ("Common errors related to
+this Task.") and the gold sections were assigned at dataset-build time by an
+LLM full-text read of the handbooks (evidence field: llm full-text, 313/313;
+the ACS PDFs' own refs column was empty), pinned to a single chunk id
+(hbk:...:ch10#1). Retrieval finds the right handbook CHAPTER 93% of the time
+at @16 -- it loses points for citing a different chunk of the same chapter
+than the build-time LLM picked. Adding task context to the query (from
+data/acs/acs_tasks.jsonl) measurably HURT (recall@4 18->12%): the fragments'
+gold links are editorial, not recoverable from any phrasing of the text.
+Interpretation: ACS is a link-navigation surface (the dataset already ships
+deterministic student-style links), not a search task. Do not quote its
+chunk-exact accuracy next to the FAR/AIM 76%; they measure different things.
+Real weakness exposed: chunk-granular retrieval under chapter ambiguity --
+fixable with adjacency expansion (top-k chunks -> neighboring chunks / full
+chapter), untested.
+
 How it got here, per change:
 1. **Sliding-window embeddings** (600-char windows / 400 stride, title
    repeated, max-pooled per doc; cache work/rag_corpus_winemb_*.npz). The
