@@ -76,24 +76,34 @@ rerank + query-mention pinning) -> generation (served Flash-Next, thinking
 off, training-format prompt) -> verbatim-quote/citation gate with one
 retry; anything unverified becomes a clean refusal.
 
-Gold set (120), `work/rag_gold_hybrid.jsonl` (hybrid BM25+dense, final):
+Gold set (120), final configs:
 
-| measure | dense-only | **hybrid (final)** |
-|---|---|---|
-| retrieval@4 hit rate | 75.0% | **79.2%** |
-| validated accuracy | 61.7% | **64.2%** |
-| precision on shipped answers | 77.1% | **81.9%** |
-| fabricated quotes shipped | 0 | **0 (gate-enforced)** |
-| clean refusals | 20.0% | 21.7% |
-| validated acc when retrieval hits | 82.2% | 81.1% |
+| measure | dense ([:1200] trunc) | hybrid bm25 | **windowed+HyDE (current default)** |
+|---|---|---|---|
+| retrieval@4 hit rate | 75.0% | 79.2% | **85.0%** |
+| validated accuracy | 61.7% | 64.2% | **69.2%** |
+| precision on shipped answers | 77.1% | 81.9% | **88.3%** |
+| fabricated quotes shipped | 0 | 0 | **0 (gate-enforced)** |
+| clean refusals | 20.0% | 21.7% | 21.7% |
+| validated acc when retrieval hits | 82.2% | 81.1% | 81.4% |
 
-BM25 (Okapi, inverted index cached in work/rag_bm25.pkl; tokenization keeps
-section numbers as single tokens) rescues 6 gold sections dense@16 misses;
-fused by weighted RRF (bm25 weight 0.7 in the rerank pool -- dense leads
-the top ranks, lexical only fills the pool) -- unweighted fusion HURT
-top-4 (53%@4 lexical channel is too weak to lead).
+Two changes behind the final jump:
+1. **Sliding-window embeddings** (600-char windows / 400 stride, title
+   repeated, max-pooled per doc; cache work/rag_corpus_winemb_*.npz). The
+   original [:1200]-char truncation made late text in long sections (AIM
+   3-5-3 at 11k chars, FAR 107.140 at 4.5k) invisible to dense retrieval.
+2. **HyDE query expansion** (--no-hyde to disable): the served model drafts
+   60-100 words of regulatory-style answer text per query; embedding the
+   draft and max-fusing closes the colloquial-vs-regulatory vocabulary gap
+   (the seven "drone"/Part-107 questions that both original channels
+   missed). Pool recall@16: 84% -> 92%.
 
-Old dense-only detail, `work/rag_gold_final.jsonl`:
+BM25 is now auto-disabled when HyDE is on: windowed+HyDE dense captures
+everything the lexical channel used to rescue, and its weight was measurably
+degrading the pool (84% -> 80%). It remains available for non-HyDE configs
+(--bm25-weight, and --no-hyde).
+
+Earlier dense-only detail, `work/rag_gold_final.jsonl`:
 
 | measure | value |
 |---|---|
