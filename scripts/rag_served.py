@@ -186,6 +186,72 @@ def ask(client, model, msgs, temperature=0.2):
 _MENTION_RES = (re.compile(r"§\s*(\d+\.\d+)"), re.compile(r"¶\s*(\d+-\d+-\d+)"))
 
 
+# ------------------------------------------------------------------ BM25
+_TOK = re.compile(r"[a-z0-9]+(?:\.\d+)?")
+BM25_CACHE = Path("work/rag_bm25.pkl")
+
+
+class BM25:
+    """Tiny inverted-index BM25 (Okapi formula). Section numbers survive
+    tokenization as single tokens ('105.15'), which is exactly where pure
+    dense retrieval is weakest."""
+
+    def __init__(self, texts, k1=1.4, b=0.4):
+        import collections
+        import math
+        self.k1, self.b = k1, b
+        toks = [_TOK.findall(t.lower()) for t in texts]
+        self.N = len(toks)
+        self.avgdl = sum(len(t) for t in toks) / max(1, self.N)
+        self.postings = {}
+        for i, t in enumerate(toks):
+            for term, f in collections.Counter(t).items():
+                self.postings.setdefault(term, []).append((i, f))
+        self.idf = {}
+        for term, pl in self.postings.items():
+            df = len(pl)
+            self.idf[term] = math.log(1 + (self.N - df + 0.5) / (df + 0.5))
+        self.dl = [len(t) for t in toks]
+
+    def scores(self, query):
+        import numpy as np
+        s = np.zeros(self.N)
+        for term in set(_TOK.findall(query.lower())):
+            pl = self.postings.get(term)
+            if not pl:
+                continue
+            idf = self.idf[term]
+            for i, f in pl:
+                s[i] += idf * f * (self.k1 + 1) / (
+                    f + self.k1 * (1 - self.b + self.b * self.dl[i] / self.avgdl))
+        return s
+
+
+def bm25_index(docs):
+    import pickle
+    key = str(hash(tuple(d["_id"] for d in docs)))
+    if BM25_CACHE.is_file():
+        with BM25_CACHE.open("rb") as fh:
+            cached = pickle.load(fh)
+        if cached.get("key") == key:
+            return cached["bm25"]
+    bm = BM25([f"{d['title']} {d['title']} {d['text']}" for d in docs])
+    with BM25_CACHE.open("wb") as fh:
+        pickle.dump({"key": key, "bm25": bm}, fh)
+    return bm
+
+
+def rrf_fusion(dense_sids, bm25_sids, k, bm25_weight=0.7):
+    """Weighted reciprocal-rank fusion of two unique-section-id rankings.
+    The lexical channel gets a lower weight: it rescues sections dense
+    misses (exact-number matches) but is too weak to lead the top ranks."""
+    score = {}
+    for ranking, w in ((dense_sids, 1.0), (bm25_sids, bm25_weight)):
+        for rank, sid in enumerate(ranking):
+            score[sid] = score.get(sid, 0.0) + w / (60 + rank)
+    return [sid for sid, _ in sorted(score.items(), key=lambda kv: -kv[1])[:k]]
+
+
 def mention_ids(query, index):
     """Sections explicitly named in the question are pinned into the set."""
     out = []
@@ -197,27 +263,27 @@ def mention_ids(query, index):
     return out
 
 
-def rerank(client, model, query, cands):
+def rerank(client, model, query, cands, k=4):
     """Listwise rerank: served model picks which candidates to read."""
-    if len(cands) <= 4:
+    if len(cands) <= k:
         return cands
     listing = "\n".join(
         f"[{i}] {d['title']}: {d['text'][:220]}" for i, d in enumerate(cands))
     prompt = ("You select passages for a regulation-question answering "
               "system. Question:\n" + query + "\n\nCandidates:\n" + listing +
-              "\n\nReturn the numbers (comma-separated, up to 4) of the "
+              f"\n\nReturn the numbers (comma-separated, up to {k}) of the "
               "candidates most likely to CONTAIN the exact rule text needed "
               "to answer. No explanation.")
     out = ask(client, model, [{"role": "user", "content": prompt}],
               temperature=0.0)
     picks = [int(x) for x in re.findall(r"\d+", out) if int(x) < len(cands)]
     chosen = [cands[i] for i in picks]
-    for d in cands:                      # pad with dense order if under 4
+    for d in cands:                      # pad with fused order if under k
         if d not in chosen:
             chosen.append(d)
-        if len(chosen) == 4:
+        if len(chosen) == k:
             break
-    return chosen[:4]
+    return chosen[:k]
 
 
 def main() -> int:
@@ -232,6 +298,7 @@ def main() -> int:
     p.add_argument("--pool", type=int, default=16,
                    help="dense candidates fed to the reranker")
     p.add_argument("--no-rerank", dest="rerank", action="store_false")
+    p.add_argument("--no-hybrid", dest="hybrid", action="store_false")
     p.add_argument("--embed-model", default=DEFAULT_EMBED)
     p.add_argument("--url", default="http://localhost:8888/v1")
     p.add_argument("--model", default="Qwen3.8-Flash-Next")
@@ -258,6 +325,32 @@ def main() -> int:
     sims = qemb @ emb.T
     topk = np.argsort(-sims, axis=1)[:, :args.k * 3]   # oversample, then dedupe
 
+    sid2idx = {}
+    for j, d in enumerate(docs):
+        sid2idx.setdefault(d["section_id"], j)
+    bm = bm25_index(docs) if args.hybrid else None
+    if bm is not None:
+        print(f"bm25 ready over {bm.N} docs", flush=True)
+
+    def fused_order(i):
+        """Doc indices in fused (dense [ + bm25 ]) ranking order."""
+        dense_rank = [int(j) for j in np.argsort(-sims[i])]
+        if bm is None:
+            return dense_rank
+        bm25_rank = [int(j) for j in np.argsort(-bm.scores(queries[i]))]
+
+        def uniq_sids(idxs):
+            seen, out = set(), []
+            for j in idxs:
+                sid = docs[j]["section_id"]
+                if sid not in seen:
+                    seen.add(sid)
+                    out.append(sid)
+            return out
+        fused = rrf_fusion(uniq_sids(dense_rank), uniq_sids(bm25_rank),
+                           args.pool * 3)
+        return [sid2idx[s] for s in fused if s in sid2idx]
+
     client = OpenAI(base_url=args.url, api_key="none", timeout=300)
     lock = threading.Lock()
     rows = []
@@ -270,7 +363,7 @@ def main() -> int:
             if rec_doc and sid not in seen:
                 seen.add(sid)
                 cands.append(rec_doc)
-        for j in topk[i]:
+        for j in fused_order(i):
             d = docs[j]
             if d["section_id"] in seen:
                 continue
@@ -278,7 +371,7 @@ def main() -> int:
             cands.append(d)
             if len(cands) >= args.pool:
                 break
-        hits = (rerank(client, args.model, q, cands) if args.rerank
+        hits = (rerank(client, args.model, q, cands, args.k) if args.rerank
                 else cands[:args.k])
         retrieved = [h["section_id"] for h in hits]
         retrieved_texts = [h["text"] for h in hits]

@@ -76,7 +76,24 @@ rerank + query-mention pinning) -> generation (served Flash-Next, thinking
 off, training-format prompt) -> verbatim-quote/citation gate with one
 retry; anything unverified becomes a clean refusal.
 
-Gold set (120), `work/rag_gold_final.jsonl`:
+Gold set (120), `work/rag_gold_hybrid.jsonl` (hybrid BM25+dense, final):
+
+| measure | dense-only | **hybrid (final)** |
+|---|---|---|
+| retrieval@4 hit rate | 75.0% | **79.2%** |
+| validated accuracy | 61.7% | **64.2%** |
+| precision on shipped answers | 77.1% | **81.9%** |
+| fabricated quotes shipped | 0 | **0 (gate-enforced)** |
+| clean refusals | 20.0% | 21.7% |
+| validated acc when retrieval hits | 82.2% | 81.1% |
+
+BM25 (Okapi, inverted index cached in work/rag_bm25.pkl; tokenization keeps
+section numbers as single tokens) rescues 6 gold sections dense@16 misses;
+fused by weighted RRF (bm25 weight 0.7 in the rerank pool -- dense leads
+the top ranks, lexical only fills the pool) -- unweighted fusion HURT
+top-4 (53%@4 lexical channel is too weak to lead).
+
+Old dense-only detail, `work/rag_gold_final.jsonl`:
 
 | measure | value |
 |---|---|
@@ -95,10 +112,10 @@ remainder confident fabrications ("15 minutes before the operation",
 into refusals -- that is the reliability the fine-tune failed to deliver,
 manufactured at inference instead.
 
-Remaining headroom (in order of expected payoff): retrieval recall (pool
-recall 80%; hybrid BM25+dense or a larger embedder -> ceiling ~75-85%
-overall), embedder upgrade, k=6, few-shot exemplars in the prompt for
-table-heavy AIM sections (the dominant false-reject source).
+Remaining headroom (in order of expected payoff): the 18 gold sections
+missed by BOTH retrieval channels (harder queries -- a stronger embedder or
+hybrid query expansion), table-heavy AIM sections as the dominant
+false-reject source (few-shot exemplars in the prompt), k=6.
 
 ## Reading
 
@@ -130,7 +147,6 @@ table-heavy AIM sections (the dominant false-reject source).
 - ACS coverage histogram (300 sample): 273 zeros, 5 full, remainder partial.
 
 ## Open items
-- base oracle control (command in git log of this file / conversation)
 - publish dataset (currently private) — user's call
 - quantize merge (llmcompressor compressed-tensors) for TensorFold serving,
   then served eval_gold with --url http://localhost:8888/v1 --model faraim-27b
