@@ -76,32 +76,42 @@ rerank + query-mention pinning) -> generation (served Flash-Next, thinking
 off, training-format prompt) -> verbatim-quote/citation gate with one
 retry; anything unverified becomes a clean refusal.
 
-Gold set (120), final configs:
+Gold set (120), current default config. Multi-perspective HyDE, two
+independent runs (seed 7 / seed 11, i.e. fresh sampled drafts):
 
-| measure | dense ([:1200] trunc) | hybrid bm25 | **windowed+HyDE (current default)** |
-|---|---|---|---|
-| retrieval@4 hit rate | 75.0% | 79.2% | **85.0%** |
-| validated accuracy | 61.7% | 64.2% | **69.2%** |
-| precision on shipped answers | 77.1% | 81.9% | **88.3%** |
-| fabricated quotes shipped | 0 | 0 | **0 (gate-enforced)** |
-| clean refusals | 20.0% | 21.7% | 21.7% |
-| validated acc when retrieval hits | 82.2% | 81.1% | 81.4% |
+| measure | run A | run B |
+|---|---|---|
+| retrieval@4 hit rate | 104/120 = 86.7% | 105/120 = 87.5% |
+| validated accuracy | 90/120 = **75.0%** | 85/120 = **70.8%** |
+| shipped answers | 101 | 94 |
+| precision on shipped answers | 89.1% | 90.4% |
+| clean refusals | 19 | 26 |
+| fabricated quotes shipped | **0** | **0** |
 
-Two changes behind the final jump:
+Headline: **~73% validated accuracy (±3 across runs) with ~90% precision on
+what it chooses to answer, and zero fabricated quotes ever shipped.** The
+variance is confined to retrieval (sampled HyDE drafts); gate precision is
+stable. Report the two-run range, not a single lucky run.
+
+Progression of the same scorer/config line: dense 61.7% -> +BM25 64.2% ->
++windowed embeddings & single HyDE 69.2% -> +3-perspective HyDE 70.8-75.0%.
+
+How it got here, per change:
 1. **Sliding-window embeddings** (600-char windows / 400 stride, title
    repeated, max-pooled per doc; cache work/rag_corpus_winemb_*.npz). The
    original [:1200]-char truncation made late text in long sections (AIM
    3-5-3 at 11k chars, FAR 107.140 at 4.5k) invisible to dense retrieval.
-2. **HyDE query expansion** (--no-hyde to disable): the served model drafts
-   60-100 words of regulatory-style answer text per query; embedding the
-   draft and max-fusing closes the colloquial-vs-regulatory vocabulary gap
-   (the seven "drone"/Part-107 questions that both original channels
-   missed). Pool recall@16: 84% -> 92%.
-
-BM25 is now auto-disabled when HyDE is on: windowed+HyDE dense captures
-everything the lexical channel used to rescue, and its weight was measurably
-degrading the pool (84% -> 80%). It remains available for non-HyDE configs
-(--bm25-weight, and --no-hyde).
+2. **HyDE query expansion** (--no-hyde; --hyde-n 1..3): the served model
+   drafts regulatory-style text per query (perspectives: rule text, key
+   terms, examiner restatement), drafts are embedded and max-fused. Closes
+   the colloquial-vs-regulatory vocabulary gap (the seven "drone"/Part-107
+   questions both original channels missed). Single-draft pool recall@16
+   84->92%; three perspectives lift ranking-quality (offline recall@4
+   77->83%) and end-to-end accuracy ~+4 pts.
+3. **BM25** auto-disabled when HyDE is on: windowed+HyDE dense captures
+   everything the lexical channel used to rescue, and its weight was
+   measurably degrading the pool (84% -> 80%). Available for non-HyDE
+   configs via --bm25-weight with --no-hyde.
 
 Earlier dense-only detail, `work/rag_gold_final.jsonl`:
 
