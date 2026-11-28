@@ -152,6 +152,22 @@ class Verifier:
                 if nv:
                     self.vmap.append((nv, rec))
         self.vmap.sort(key=lambda t: -len(t[0]))
+        self._corpus = None          # built lazily on first failed quote
+
+    def corpus(self):
+        if self._corpus is None:
+            docs, seen = [], set()
+            for sid, rec in self.index.by_id.items():
+                k = rec.get("txt_path") or (rec.get("chunk") or {}).get("id")
+                if k in seen:
+                    continue
+                seen.add(k)
+                try:
+                    docs.append((sid, normalize(self.index.text(rec))))
+                except Exception:
+                    pass
+            self._corpus = docs
+        return self._corpus
 
     def cited_records(self, answer):
         na = normalize(answer)
@@ -184,11 +200,26 @@ class Verifier:
         allowed = [self.index.text(r) for r in recs.values()] + list(retrieved_texts)
         for s in spans:
             # tolerate markdown noise the model adds when reformatting
-            # quotes (blockquote arrows, bullets, ellipsis dots) -- never
-            # word-level edits, which still fail
-            clean = re.sub(r"[>\u2022\u00b7]|\.\.+", "", s)
-            if not any(quote_matches(clean, t) for t in allowed):
-                return False, f"quote not verbatim: {s[:60]!r}"
+            # quotes (blockquote arrows, bullets, ellipsis dots, bold) --
+            # never word-level edits, which still fail
+            clean = re.sub(r"[>\u2022\u00b7]|\.\.+|\*\*", "", s)
+            if any(quote_matches(clean, t) for t in allowed):
+                continue
+            # cross-source attribution check: AIM sections paraphrase the
+            # FARs they restate, so a verbatim-true quote often lives in a
+            # parallel regulation the model failed to cite. Find it; the
+            # retry prompt tells the model where its quote came from.
+            ns = normalize(clean)
+            hits = [sid for sid, t in self.corpus() if ns in t]
+            if any(h in recs for h in hits):
+                continue
+            if hits:
+                names = ", ".join(
+                    canonical_citation(self.index.get(h)) if self.index.get(h) else h
+                    for h in hits[:3])
+                return False, (f"quote {s[:40]!r}... is verbatim in {names}, "
+                               "which you did not cite")
+            return False, f"quote not verbatim: {s[:60]!r}"
         return True, "ok"
 
 
@@ -462,8 +493,12 @@ def main() -> int:
         rejected_answer = None
         if not ok:
             n_retries = 1
+            feedback = (_FABR_MSG + f"\n\nVerification said: {why}\n"
+                        "If your quote is verbatim in a section you did not "
+                        "cite, cite that section explicitly and reuse the "
+                        "quote; otherwise quote the provided excerpts exactly.")
             msgs += [{"role": "assistant", "content": ans},
-                     {"role": "user", "content": _FABR_MSG}]
+                     {"role": "user", "content": feedback}]
             ans2 = ask(client, args.model, msgs)
             ok2, why2 = verifier.verify(ans2, retrieved_texts)
             if ok2:

@@ -81,20 +81,32 @@ independent runs (seed 7 / seed 11, i.e. fresh sampled drafts):
 
 | measure | run A | run B |
 |---|---|---|
-| retrieval@4 hit rate | 104/120 = 86.7% | 105/120 = 87.5% |
-| validated accuracy | 90/120 = **75.0%** | 85/120 = **70.8%** |
-| shipped answers | 101 | 94 |
-| precision on shipped answers | 89.1% | 90.4% |
-| clean refusals | 19 | 26 |
+| retrieval@4 hit rate | 108/120 = 90.0% | 107/120 = 89.2% |
+| validated accuracy | 95/120 = **79.2%** | 87/120 = **72.5%** |
+| shipped answers | 102 | 97 |
+| precision on shipped answers | 93.1% | 89.7% |
+| clean refusals | 18 | 23 |
 | fabricated quotes shipped | **0** | **0** |
 
-Headline: **~73% validated accuracy (±3 across runs) with ~90% precision on
-what it chooses to answer, and zero fabricated quotes ever shipped.** The
-variance is confined to retrieval (sampled HyDE drafts); gate precision is
-stable. Report the two-run range, not a single lucky run.
+Headline: **~76% validated accuracy (±4) with ~91% precision on what it
+ships, and zero fabricated quotes ever shipped.** The gate's retry is now
+informative: when a quote is verbatim-true but attributed to the wrong
+section (the AIM restates FARs in paraphrase, so the model quotes the FAR
+while citing the AIM), the verifier locates the true source corpus-wide and
+the retry says "your quote is verbatim in 14 CFR § 91.159, which you did not
+cite" -- converting would-be refusals into properly attributed answers.
+Audit of rejected spans before this change: 84/190 were true quotes with
+wrong attribution, 106/190 true fabrications (which still never pass --
+verified 0/40 leaks on closed-book fabrications).
+
+(An earlier hypothesis -- that scraped-table furniture (pipe/dot runs)
+broke table quotes -- was tested and REJECTED: the table-fold matcher
+rescued 0/45 rejections. The failures were word-level paraphrases, i.e.
+the model quoting the parallel FAR. Code removed.)
 
 Progression of the same scorer/config line: dense 61.7% -> +BM25 64.2% ->
-+windowed embeddings & single HyDE 69.2% -> +3-perspective HyDE 70.8-75.0%.
++windowed embeddings & single HyDE 69.2% -> +3-perspective HyDE 70.8-75.0%
+-> +cross-source attribution retry 72.5-79.2%.
 
 How it got here, per change:
 1. **Sliding-window embeddings** (600-char windows / 400 stride, title
@@ -112,6 +124,13 @@ How it got here, per change:
    everything the lexical channel used to rescue, and its weight was
    measurably degrading the pool (84% -> 80%). Available for non-HyDE
    configs via --bm25-weight with --no-hyde.
+4. **Cross-source attribution retry** (Verifier.corpus + leak detection in
+   verify): rejected spans are matched against every section in the corpus;
+   a span that is verbatim-true in an uncited section produces a targeted
+   retry message instead of a refusal. Motivated by the table-gold audit
+   (table-expected items scored ~65% vs ~75% prose -- because AIM tables
+   paraphrase FAR rules and the model quoted the FAR verbatim while citing
+   the AIM).
 
 Earlier dense-only detail, `work/rag_gold_final.jsonl`:
 
